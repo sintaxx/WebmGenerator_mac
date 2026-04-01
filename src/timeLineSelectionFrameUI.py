@@ -15,6 +15,11 @@ import math
 
 from contextlib import contextmanager
 
+try:
+  from .platformUtils import resource_path, tool_command
+except Exception:
+  from platformUtils import resource_path, tool_command
+
 class AbstractContextManager:
 
   def __init__(self):
@@ -334,11 +339,11 @@ class TimeLineSelectionFrameUI(ttk.Frame):
     self.frameRate = None
     self.initialShiftStart = 'Start'
 
-    self.image_handle_left_base = tk.PhotoImage(file = os.path.join("resources",'slider_left_base.gif'))
-    self.image_handle_right_base = tk.PhotoImage(file = os.path.join("resources",'slider_right_base.gif'))
+    self.image_handle_left_base = tk.PhotoImage(file = resource_path("resources",'slider_left_base.gif'))
+    self.image_handle_right_base = tk.PhotoImage(file = resource_path("resources",'slider_right_base.gif'))
 
-    self.image_handle_left_light = tk.PhotoImage(file = os.path.join("resources",'slider_left_light.gif'))
-    self.image_handle_right_light = tk.PhotoImage(file = os.path.join("resources",'slider_right_light.gif'))
+    self.image_handle_left_light = tk.PhotoImage(file = resource_path("resources",'slider_left_light.gif'))
+    self.image_handle_right_light = tk.PhotoImage(file = resource_path("resources",'slider_right_light.gif'))
     self.lastRandomSubclipPos = -1
 
     self.hoverRID = None
@@ -353,8 +358,8 @@ class TimeLineSelectionFrameUI(ttk.Frame):
 
 
     try:
-        self.prefade0 = tk.PhotoImage(file=".\\resources\\prefade0.png")
-        self.prefade1 = tk.PhotoImage(file=".\\resources\\prefade1.png")
+        self.prefade0 = tk.PhotoImage(file=resource_path("resources", "prefade0.png"))
+        self.prefade1 = tk.PhotoImage(file=resource_path("resources", "prefade1.png"))
     except:
         pass
 
@@ -414,11 +419,15 @@ class TimeLineSelectionFrameUI(ttk.Frame):
     import subprocess as sp
     sampleRate = audioProcessingSampleRate
     if self.generateWaveStyle == 'SPEECH':
-      proc = sp.Popen(['ffmpeg', '-i', filename,  '-ac', '1', '-filter:a', 'arnndn=resources/speechModel/model.rnnn,loudnorm=I=-16:TP=-1.5:LRA=11,aresample={}:async=1'.format(sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
+      proc = sp.Popen([tool_command('ffmpeg'), '-i', filename,  '-ac', '1', '-filter:a', 'arnndn={model},loudnorm=I=-16:TP=-1.5:LRA=11,aresample={sampleRate}:async=1'.format(
+        model=resource_path("resources", "speechModel", "model.rnnn").replace('\\', '/'),
+        sampleRate=sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
     elif self.generateWaveStyle == 'VOICE':
-      proc = sp.Popen(['ffmpeg', '-i', filename,  '-ac', '1', '-filter:a', 'arnndn=resources/voiceModel/model.rnnn,loudnorm=I=-16:TP=-1.5:LRA=11,aresample={}:async=1'.format(sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
+      proc = sp.Popen([tool_command('ffmpeg'), '-i', filename,  '-ac', '1', '-filter:a', 'arnndn={model},loudnorm=I=-16:TP=-1.5:LRA=11,aresample={sampleRate}:async=1'.format(
+        model=resource_path("resources", "voiceModel", "model.rnnn").replace('\\', '/'),
+        sampleRate=sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
     else:
-      proc = sp.Popen(['ffmpeg', '-i', filename,  '-ac', '1', '-filter:a', 'compand,highpass=f=200,lowpass=f=3000,aresample={}:async=1'.format(sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
+      proc = sp.Popen([tool_command('ffmpeg'), '-i', filename,  '-ac', '1', '-filter:a', 'compand,highpass=f=200,lowpass=f=3000,aresample={}:async=1'.format(sampleRate), '-map', '0:a', '-c:a', 'pcm_u8', '-f', 'data', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL)
     self.audioByteValues=np.ones((int(totalDuration*sampleRate)),np.uint8)*127
     n=0
     self.completedAudioByteDecoded = False
@@ -564,7 +573,7 @@ class TimeLineSelectionFrameUI(ttk.Frame):
         if args != self.lastWavePicSectionsRequested:
             return
 
-        proc = sp.Popen(['ffmpeg', '-y',  '-f', 'u8', '-i', 'pipe:0', '-filter_complex', "{visStyle}".format(
+        proc = sp.Popen([tool_command('ffmpeg'), '-y',  '-f', 'u8', '-i', 'pipe:0', '-filter_complex', "{visStyle}".format(
             start=startTS,
             end=endTS,
             padto=totalDuration,

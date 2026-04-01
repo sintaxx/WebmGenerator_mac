@@ -4,9 +4,13 @@ import os
 import threading
 from queue import Queue,Empty,Full
 import traceback
-import signal
 import logging
 import ctypes
+
+try:
+  from .platformUtils import popen_creation_flags, terminate_process, tool_command
+except Exception:
+  from platformUtils import popen_creation_flags, terminate_process, tool_command
 
 
 class YTDLService():
@@ -26,7 +30,7 @@ class YTDLService():
     def frameWorkerthread():
       while 1:
         url = self.inputFrameQueue.get()
-        frameCapProc = sp.Popen(["ffmpeg"
+        frameCapProc = sp.Popen([tool_command("ffmpeg")
                               ,"-loglevel", "quiet"
                               ,"-noaccurate_seek"
                               ,"-i", url  
@@ -61,7 +65,7 @@ class YTDLService():
           if url == 'UPDATE':
             self.globalStatusCallback('yt-dlp upgrade',0.0)
             print(url)
-            proc = sp.Popen(['yt-dlp','--update'],stdout=sp.PIPE)
+            proc = sp.Popen([tool_command('yt-dlp'),'--update'],stdout=sp.PIPE)
             l = b''
             while 1:
               c=proc.stdout.read(1)
@@ -106,10 +110,7 @@ class YTDLService():
 
             print(extraFlags)
 
-            if hasattr(os.sys, 'winver'):
-              proc = sp.Popen(['yt-dlp','--ignore-errors','--keep-video','--restrict-filenames']+extraFlags+[url,'-o',outfolder,'--merge-output-format','mp4'],creationflags=sp.CREATE_NEW_PROCESS_GROUP,stderr=sp.STDOUT,stdout=sp.PIPE,bufsize=10 ** 5)
-            else:
-              proc = sp.Popen(['yt-dlp','--ignore-errors','--keep-video','--restrict-filenames']+extraFlags+[url,'-o',outfolder,'--merge-output-format','mp4'],stderr=sp.STDOUT,stdout=sp.PIPE,bufsize=10 ** 5)
+            proc = sp.Popen([tool_command('yt-dlp'),'--ignore-errors','--keep-video','--restrict-filenames']+extraFlags+[url,'-o',outfolder,'--merge-output-format','mp4'],creationflags=popen_creation_flags(),stderr=sp.STDOUT,stdout=sp.PIPE,bufsize=10 ** 5)
 
             l = b''
             self.globalStatusCallback('Download start {}'.format(url),0)
@@ -140,10 +141,7 @@ class YTDLService():
 
               if self.cancelEvent.is_set() or (streamHasBeenCut and lastStreamcutVal!=streamHasBeenCut):
                 try:
-                  if hasattr(os.sys, 'winver'):
-                    os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-                  else:
-                    proc.send_signal(signal.SIGTERM)
+                  terminate_process(proc)
                 except Exception as ex:
                   print(ex)
                   try:

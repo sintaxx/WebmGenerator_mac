@@ -15,6 +15,7 @@ import psutil
 import random
 from math import sin,cos,floor
 from .modalWindows import SubtitleExtractionModal, OptionsDialog, AdvancedDropModal
+from .platformUtils import is_windows
 import colorsys
 import numpy as np
 
@@ -263,7 +264,8 @@ class WebmGeneratorUi:
     self.captureSplitmenu.add_command(label="Start GDI screengrabber + cpu screen capture", command=self.startScreencap_gdigrab)
     self.captureSplitmenu.add_command(label="Start GDI screengrabber + nvenc screen capture", command=self.startScreencap_gdigrab_nvenc)
     self.captureSplitmenu.add_command(label="Start Desktop Duplication API + nvenc screen capture", command=self.startScreencap_ddagrab)
-    self.filemenu.add_cascade(label="Screen capture", menu=self.captureSplitmenu,image=self.iconLookup.get('video-camera-media'), compound=LEFT)
+    if is_windows():
+      self.filemenu.add_cascade(label="Screen capture", menu=self.captureSplitmenu,image=self.iconLookup.get('video-camera-media'), compound=LEFT)
 
     self.filemenu.add_separator()
     self.filemenu.add_command(label="Extract .srt subtitles from video file", command=self.extractSubs,image=self.iconLookup.get('alphabet-s'), compound=LEFT)

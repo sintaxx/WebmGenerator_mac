@@ -7,12 +7,16 @@ from tkinter import simpledialog
 
 import os
 import threading
-import signal
 from math import floor
 import random
 import logging
 import time
 import subprocess as sp
+
+try:
+    from .platformUtils import is_windows, popen_creation_flags, resource_path, terminate_process, tool_command
+except Exception:
+    from platformUtils import is_windows, popen_creation_flags, resource_path, terminate_process, tool_command
 
 from .modalWindows import (PerfectLoopScanModal, 
                            YoutubeDLModal, 
@@ -103,7 +107,7 @@ class VideoFilePreview(ttk.Frame):
         self.labelVideoPreviewImage = placeholderPreviewGrey
         try:
           if placeholderPreviewImage is None:
-            placeholderPreviewImage = tk.PhotoImage(file=".\\resources\\loadingPreview.png")
+            placeholderPreviewImage = tk.PhotoImage(file=resource_path("resources", "loadingPreview.png"))
           self.labelVideoPreviewImage = placeholderPreviewImage
         except Exception as e:
           print(e)
@@ -499,7 +503,7 @@ class CutselectionUi(ttk.Frame):
 
 
         try:
-          self.frameVideoPlayerphoto = tk.PhotoImage(file=".\\resources\\playerbg.png")
+          self.frameVideoPlayerphoto = tk.PhotoImage(file=resource_path("resources", "playerbg.png"))
           self.frameVideoPlayerlabel = ttk.Label(self.frameVideoPlayerFrame, image=self.frameVideoPlayerphoto)
           self.frameVideoPlayerlabel.image = self.frameVideoPlayerphoto
           self.frameVideoPlayerlabel.config(
@@ -1045,20 +1049,22 @@ class CutselectionUi(ttk.Frame):
       windowRef.cliprunScreencap=True
       windowRef.completedScreenCapName=None
 
+      if not is_windows():
+        windowRef.cliprunScreencap = False
+        messagebox.showinfo(title="Screen capture unavailable", message="Desktop capture is only enabled on Windows in this build.")
+        return
+
       def screenCapWorker(windowRef):
 
         capturefilename = 'DesktopCapture_'+str(time.time())+'.mkv'
         if captureType == 'ddagrab':
-            cmd = ['ffmpeg','-f', 'lavfi', '-i', 'ddagrab', '-c:v', 'h264_nvenc', '-cq', '18', capturefilename]
+            cmd = [tool_command('ffmpeg'),'-f', 'lavfi', '-i', 'ddagrab', '-c:v', 'h264_nvenc', '-cq', '18', capturefilename]
         elif captureType=='gdigrab_nvenc':
-            cmd = ['ffmpeg','-f','gdigrab','-framerate','30','-i','desktop','-c:v','h264_nvenc','-qp','0', capturefilename]
+            cmd = [tool_command('ffmpeg'),'-f','gdigrab','-framerate','30','-i','desktop','-c:v','h264_nvenc','-qp','0', capturefilename]
         else:
-            cmd = ['ffmpeg','-f','gdigrab','-framerate','30','-i','desktop', capturefilename]
+            cmd = [tool_command('ffmpeg'),'-f','gdigrab','-framerate','30','-i','desktop', capturefilename]
 
-        if hasattr(os.sys, 'winver'):
-          proc = sp.Popen(cmd,creationflags=sp.CREATE_NEW_PROCESS_GROUP,stderr=sp.DEVNULL,stdout=sp.DEVNULL,bufsize=10 ** 5)
-        else:
-          proc = sp.Popen(cmd,stderr=sp.DEVNULL,stdout=sp.DEVNULL,bufsize=10 ** 5)
+        proc = sp.Popen(cmd,creationflags=popen_creation_flags(),stderr=sp.DEVNULL,stdout=sp.DEVNULL,bufsize=10 ** 5)
 
         while windowRef.cliprunScreencap:
           pollresult = proc.poll()
@@ -1066,10 +1072,7 @@ class CutselectionUi(ttk.Frame):
           if pollresult == 1:
             break
         
-        if hasattr(os.sys, 'winver'):
-          os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-        else:
-          proc.send_signal(signal.SIGTERM)
+        terminate_process(proc)
         proc.communicate()
 
         windowRef.completedScreenCapName = capturefilename

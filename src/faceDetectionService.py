@@ -5,6 +5,11 @@ import json
 import threading
 from .encodingUtils import cleanFilenameForFfmpeg
 
+try:
+  from .platformUtils import resource_path, tool_command
+except Exception:
+  from platformUtils import resource_path, tool_command
+
 class FaceDetectionService():
 
 
@@ -27,8 +32,8 @@ class FaceDetectionService():
 
           try:
             
-            framePng = sp.run(['ffmpeg', '-ss', str(timestamp), '-i', cleanFilenameForFfmpeg(sourceFile),  '-vframes', '1', '-c:v', 'png', '-f', 'image2pipe', '-'],stdout=sp.PIPE,stderr=sp.PIPE)
-            rects    = sp.run(['pigo', '-in', '-', '-cf', 'resources\\cascade\\facefinder', '-plc', 'resources\\cascade\\puploc', '-json', '-', '-out', 'empty'],input=framePng.stdout,stderr=sp.PIPE,stdout=sp.PIPE)
+            framePng = sp.run([tool_command('ffmpeg'), '-ss', str(timestamp), '-i', cleanFilenameForFfmpeg(sourceFile),  '-vframes', '1', '-c:v', 'png', '-f', 'image2pipe', '-'],stdout=sp.PIPE,stderr=sp.PIPE)
+            rects    = sp.run(['pigo', '-in', '-', '-cf', resource_path('resources', 'cascade', 'facefinder'), '-plc', resource_path('resources', 'cascade', 'puploc'), '-json', '-', '-out', 'empty'],input=framePng.stdout,stderr=sp.PIPE,stdout=sp.PIPE)
             print(rects)
             rects    = json.loads(rects.stdout)
 
@@ -59,9 +64,4 @@ class FaceDetectionService():
       callback([])
 
 if __name__ == '__main__':
-  fd = FaceDetectionService()
-  def cb(sourceFile,timestamp,rect):
-    print(sourceFile,timestamp,rect)
-
-  fd.getFaceBoundingRect("C:\\Users\\baxter001\\VideoEditor\\resources\\_-ph5f3d22d619f78_Katekuray_1_2.webm",'',10,cb)
-  fd.faceDetectRequestQueue.join()
+  print("FaceDetectionService is intended to be used from the application runtime.")

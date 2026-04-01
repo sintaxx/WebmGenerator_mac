@@ -5,23 +5,23 @@ import logging
 import time
 
 try:
+  from .platformUtils import add_windows_dll_search_paths, prepend_env_path, resource_path
+except Exception:
+  from platformUtils import add_windows_dll_search_paths, prepend_env_path, resource_path
+
+try:
   scriptPath = os.path.dirname(os.path.abspath(__file__))
   basescriptPath = os.path.split(scriptPath)[0]
   scriptPath_frozen = os.path.dirname(os.path.abspath(sys.executable))
-  os.environ["PATH"] = scriptPath + os.pathsep + scriptPath_frozen + os.pathsep + os.environ["PATH"]
+  prepend_env_path(scriptPath, scriptPath_frozen)
   print(scriptPath)
   print(scriptPath_frozen)
 
-  
-  os.add_dll_directory(basescriptPath)
-  os.add_dll_directory(scriptPath)
-  os.add_dll_directory(scriptPath_frozen)
-except AttributeError as e:
-  print(e)
+  add_windows_dll_search_paths(basescriptPath, scriptPath, scriptPath_frozen)
 except Exception as e:
   logging.error("scriptPath Exception",exc_info=e)
 
-os.environ["FREI0R_PATH"] = os.path.abspath(os.path.join('src','frei0r-1'))
+os.environ["FREI0R_PATH"] = resource_path("src", "frei0r-1")
 
 
 from tkinter import Tk

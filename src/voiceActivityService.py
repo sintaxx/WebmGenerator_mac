@@ -6,6 +6,11 @@ from .encodingUtils import cleanFilenameForFfmpeg
 import numpy as np
 
 try:
+  from .platformUtils import tool_command
+except Exception:
+  from platformUtils import tool_command
+
+try:
   import webrtcvad
 except Exception as e:
   webrtcvad=None
@@ -64,7 +69,7 @@ class VoiceActivityService():
             frame_duration = int(float(sampleLength))
             windowLength = float(windowLength)
 
-            proc = sp.Popen(['ffmpeg.exe', '-i', cleanFilenameForFfmpeg(filename), '-ac', '1','-ar', str(sample_rate), '-acodec', 'pcm_s16le', '-f', 'wav', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL,bufsize=10**8)
+            proc = sp.Popen([tool_command('ffmpeg'), '-i', cleanFilenameForFfmpeg(filename), '-ac', '1','-ar', str(sample_rate), '-acodec', 'pcm_s16le', '-f', 'wav', '-'],stdout=sp.PIPE,stderr=sp.DEVNULL,bufsize=10**8)
 
             n=0
 

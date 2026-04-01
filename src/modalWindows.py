@@ -13,6 +13,11 @@ import threading
 import json
 
 try:
+  from .platformUtils import add_windows_dll_search_paths, prepend_env_path, resource_path
+except Exception:
+  from platformUtils import add_windows_dll_search_paths, prepend_env_path, resource_path
+
+try:
   from .encodingUtils import cleanFilenameForFfmpeg
 except:
   from encodingUtils import cleanFilenameForFfmpeg
@@ -28,15 +33,11 @@ try:
   scriptPath_frozen = os.path.dirname(os.path.abspath(sys.executable))
 
 
-  os.environ["PATH"] = scriptPath + os.pathsep + parentScriptPath + os.pathsep + scriptPath_frozen + os.pathsep + os.environ["PATH"]
+  prepend_env_path(scriptPath, parentScriptPath, scriptPath_frozen)
   print(scriptPath)
   print(scriptPath_frozen)
 
-  os.add_dll_directory(basescriptPath)
-  os.add_dll_directory(scriptPath)
-  os.add_dll_directory(scriptPath_frozen)
-except AttributeError as e:
-  print(e)
+  add_windows_dll_search_paths(basescriptPath, scriptPath, scriptPath_frozen)
 except Exception as e:
   print(e)
   logging.error("scriptPath Exception",exc_info=e)
