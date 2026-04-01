@@ -4,6 +4,8 @@
 
 ### Windows Downloads here: https://github.com/dfaker/WebmGenerator/releases
 
+This fork is being updated toward a shared Windows and macOS codebase. Windows-only features such as desktop capture and NVENC remain supported on Windows, while macOS uses PATH-based tool discovery and can expose VideoToolbox hardware encoders when the local ffmpeg build supports them.
+
 A tool for cutting, filtering and joining video clips, supports webm (VP8, VP9), mp4 (x264, H.265, SVT AV1) and high quality gif outputs, includes realtime effect filtering and transition effects between scenes.
 
 - 🎥 [Webm, Mp4 and Gif outputs](https://github.com/dfaker/WebmGenerator/wiki/Output-Examples)
@@ -19,14 +21,16 @@ A tool for cutting, filtering and joining video clips, supports webm (VP8, VP9),
 
 ### Some examples of the possible outputs are [in the wiki](https://github.com/dfaker/WebmGenerator/wiki/Output-Examples)
 
-## External dependencies:
-- mpv-2.dll - https://mpv.io/installation/
-- ffmpeg - https://www.ffmpeg.org/download.html
+## External dependencies
+- mpv - https://mpv.io/installation/
+- ffmpeg / ffprobe - https://www.ffmpeg.org/download.html
 - youtube-dlp - https://github.com/yt-dlp/yt-dlp (optional)
+- gifski - https://gif.ski/ (optional, only needed for gifski output)
+- pigo - https://github.com/esimov/pigo (optional, only needed for face detection helpers)
 
-All of these should be placed into the same folder as the script or on the PATH.
+The app looks for these tools on `PATH` on both Windows and macOS. Older Windows bundle-oriented workflows may also place binaries beside the script, but a PATH-based setup is now the preferred runtime model.
 
-## Python dependencies:
+## Python dependencies
 
 To run with python 3 directly these packages are used:
 
@@ -36,13 +40,20 @@ To run with python 3 directly these packages are used:
 - pathvalidate
 - tkinterdnd2
 
-pip can install them all for you with a single command:
+Install the base cross-platform dependencies with:
 
  `pip3 install -r requirements.txt`
- 
- For Linux users tkinter may not be installed, to install it in ubuntu for example run: `sudo apt-get install python3-tk`
- 
- Alternatively **windows users may use one of the recent bundled releases: https://github.com/dfaker/WebmGenerator/releases.**
+
+Platform-specific dependency notes:
+- Windows: `pip3 install -r requirements-windows.txt`
+- macOS: `pip3 install -r requirements-macos.txt`
+
+Runtime notes:
+- Windows Python setups may still want `pywin32` for compatibility helpers.
+- macOS requires a Tk-enabled Python build. If `import tkinter` fails, install/use a Python distribution that ships Tk support before launching the app.
+- Linux users may need to install Tk separately, for example on Ubuntu: `sudo apt-get install python3-tk`
+
+Alternatively **Windows users may use one of the recent bundled releases: https://github.com/dfaker/WebmGenerator/releases.**
 
 ## Usage
 
