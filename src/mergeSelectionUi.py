@@ -774,7 +774,7 @@ class SelectableVideoEntry(ttk.Frame):
     self.previewImage= tk.PhotoImage(data=self.previewData)  
 
     try:
-      self.previewImage = tk.PhotoImage(file=".\\resources\\cutPreview.png")
+      self.previewImage = tk.PhotoImage(file=os.path.join("resources","cutPreview.png"))
     except Exception as e:
       logging.error("cutPreview PhotoImage Exception",exc_info=e)
 
@@ -1171,6 +1171,8 @@ class MergeSelectionUi(ttk.Frame):
       'mp4:x264',
       'mp4:x264_Nvenc',
       'mp4:H265_Nvenc',
+      'mp4:H264_VideoToolbox',
+      'mp4:H265_VideoToolbox',
       'mp4:AV1',
       'webm:VP8',
       'webm:VP9']
@@ -1193,6 +1195,8 @@ class MergeSelectionUi(ttk.Frame):
       'gifski',      
       'apng',
     ]
+
+    self.availableOutputFormats = list(self.outputFormats)
 
     self.outputFormatVar.set(self.outputFormats[0])
 
@@ -1460,7 +1464,7 @@ class MergeSelectionUi(ttk.Frame):
 
     self.comboboxOutputFormat= ttk.OptionMenu(self.frameSequenceValues,self.outputFormatVar,self.outputFormatVar.get(),*self.outputFormats)
 
-    Tooltip(self.comboboxOutputFormat,text='The output format of the rendered video, nvenc GPU accelerated options require a nvidia graphics card.')
+    Tooltip(self.comboboxOutputFormat,text='The output format of the rendered video. Hardware-accelerated options appear only when the current OS and ffmpeg build support them.')
 
     self.comboboxOutputFormat['padding']=2
     self.comboboxOutputFormat.grid(row=0,column=1,sticky='ew')
@@ -1879,6 +1883,8 @@ class MergeSelectionUi(ttk.Frame):
 
         for k,v in p.items():
           if k in self.editableProfileVars:
+            if k == 'outputFormat' and self.controller is not None:
+              v = self.controller.resolveOutputFormat(v)
             attrName = k+'Var'
             if hasattr(self, attrName) and hasattr(getattr(self, attrName),'set'):
                getattr(self, attrName).set(v)
@@ -2535,6 +2541,7 @@ class MergeSelectionUi(ttk.Frame):
   def setController(self,controller):
     self.controller=controller
     self.updateProfileSpecs()
+    self.updateOutputFormats()
 
     for filterElem in self.postProcessingFilterOptions:
       if filterElem.upper() == self.controller.getDefaultPostFilter().upper():
@@ -2556,6 +2563,24 @@ class MergeSelectionUi(ttk.Frame):
       self.profileVar.set(self.defaultProfile)
     else:
       self.profileVar.set(self.profiles[0])
+
+  def updateOutputFormats(self):
+    if self.controller is None:
+      return
+
+    availableFormats = self.controller.getAvailableOutputFormats()
+    if not availableFormats:
+      availableFormats = self.outputFormats
+
+    self.outputFormats = availableFormats
+
+    menu = self.comboboxOutputFormat["menu"]
+    menu.delete(0, "end")
+    for string in self.outputFormats:
+      menu.add_command(label=string, command=lambda value=string: self.outputFormatVar.set(value))
+
+    if self.outputFormatVar.get() not in self.outputFormats:
+      self.outputFormatVar.set(self.outputFormats[0])
 
 
   def previewFrameCallback(self,requestId,timestamp,size,imageData):

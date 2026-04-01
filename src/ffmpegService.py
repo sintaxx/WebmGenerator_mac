@@ -14,6 +14,7 @@ import subprocess as sp
 import threading
 import time
 import json
+import platform
 
 import numpy as np
 
@@ -25,6 +26,8 @@ from .encoders.webmvp8Encoder import encoder as webmvp8Encoder
 from .encoders.webmvp9Encoder import encoder as webmvp9Encoder
 from .encoders.mp4x264NvencEncoder import encoder as mp4x264NvencEncoder
 from .encoders.mp4H265NvencEncoder import encoder as mp4H265NvencEncoder
+from .encoders.mp4x264VideoToolboxEncoder import encoder as mp4x264VideoToolboxEncoder
+from .encoders.mp4H265VideoToolboxEncoder import encoder as mp4H265VideoToolboxEncoder
 from .encoders.mp4AV1Encoder       import encoder as mp4AV1Encoder
 
 from .encoders.specVideoEncoder import SpecVideoEncoder
@@ -42,6 +45,60 @@ from .masonry import Brick,Stack
 import subprocess as sp
 import numpy as np
 from collections import defaultdict, deque
+
+
+_encoder_support_cache = {}
+_binary_support_cache = {}
+_available_output_formats_cache = None
+
+
+def _is_darwin():
+    return platform.system() == 'Darwin'
+
+
+def _is_windows():
+    return platform.system() == 'Windows'
+
+
+def _ffmpeg_supports_encoder(codec_name):
+    if codec_name in _encoder_support_cache:
+        return _encoder_support_cache[codec_name]
+
+    proc = sp.run(
+        [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-f',
+            'lavfi',
+            '-i',
+            'color=black:s=16x16',
+            '-frames:v',
+            '1',
+            '-an',
+            '-c:v',
+            codec_name,
+            '-f',
+            'null',
+            '-',
+        ],
+        stdout=sp.PIPE,
+        stderr=sp.PIPE,
+    )
+
+    supported = proc.returncode == 0
+    _encoder_support_cache[codec_name] = supported
+    return supported
+
+
+def _binary_available(binary_name):
+    if binary_name in _binary_support_cache:
+        return _binary_support_cache[binary_name]
+
+    available = shutil.which(binary_name) is not None
+    _binary_support_cache[binary_name] = available
+    return available
 
 def rgb2gray(rgb):
     r, g, b = rgb[:,:,0], rgb[:,:,1], rgb[:,:,2]
@@ -146,6 +203,8 @@ encoderMap = {
   ,'mp4:x264':mp4x264Encoder
   ,'mp4:x264_Nvenc':mp4x264NvencEncoder
   ,'mp4:H265_Nvenc':mp4H265NvencEncoder
+  ,'mp4:H264_VideoToolbox':mp4x264VideoToolboxEncoder
+  ,'mp4:H265_VideoToolbox':mp4H265VideoToolboxEncoder
   ,'mp4:AV1':mp4AV1Encoder
   ,'gif':gifEncoder
   ,'gifski':gifskiEncoder
@@ -171,19 +230,100 @@ def isEnvencSupported():
     if isEnvencSupportedFlag is not None:
         return isEnvencSupportedFlag
 
-    proc = sp.Popen(['ffmpeg', '-loglevel', 'error', '-f', 'lavfi', 
-                     '-i', 'color=black:s=1080x1080', '-vframes', '1', 
-                     '-an', '-c:v', 'hevc_nvenc', '-f', 'null', '-'],stdout=sp.PIPE, stderr=sp.PIPE)
-    outs,errs = proc.communicate()
-    resp = (outs+errs).strip()
-
-    if len(resp) == 0:
-        isEnvencSupportedFlag = True
+    isEnvencSupportedFlag = _ffmpeg_supports_encoder('hevc_nvenc')
+    if isEnvencSupportedFlag:
         logging.debug("hevc_nvenc support confirmed!")
     else:
-        isEnvencSupportedFlag = False
         logging.debug("hevc_nvenc not supported!")
     return isEnvencSupportedFlag
+
+
+def isVideoToolboxSupported():
+    return _ffmpeg_supports_encoder('h264_videotoolbox') or _ffmpeg_supports_encoder('hevc_videotoolbox')
+
+
+def _resolve_output_format(output_format):
+    fallback_map = {
+        'mp4:x264_Nvenc': 'mp4:x264',
+        'mp4:H265_Nvenc': 'mp4:x264',
+        'mp4:H264_VideoToolbox': 'mp4:x264',
+        'mp4:H265_VideoToolbox': 'mp4:x264',
+        'gifski': 'gif',
+    }
+
+    available_formats = _available_output_formats()
+    if output_format in available_formats:
+        return output_format
+
+    if output_format == 'mp4:x264_Nvenc' and not _ffmpeg_supports_encoder('h264_nvenc'):
+        output_format = fallback_map[output_format]
+    elif output_format == 'mp4:H265_Nvenc' and not _ffmpeg_supports_encoder('hevc_nvenc'):
+        output_format = fallback_map[output_format]
+    elif output_format == 'mp4:H264_VideoToolbox' and not _ffmpeg_supports_encoder('h264_videotoolbox'):
+        output_format = fallback_map[output_format]
+    elif output_format == 'mp4:H265_VideoToolbox' and not _ffmpeg_supports_encoder('hevc_videotoolbox'):
+        output_format = fallback_map[output_format]
+    elif output_format == 'gifski' and not _binary_available('gifski'):
+        output_format = fallback_map[output_format]
+
+    fallback_candidates = [
+        output_format,
+        fallback_map.get(output_format),
+        'mp4:x264',
+        'webm:VP8',
+        'gif',
+        'apng',
+    ]
+
+    for candidate in fallback_candidates:
+        if candidate in available_formats:
+            return candidate
+
+    return available_formats[0] if len(available_formats) > 0 else 'webm:VP8'
+
+
+def _available_output_formats():
+    global _available_output_formats_cache
+
+    if _available_output_formats_cache is not None:
+        return list(_available_output_formats_cache)
+
+    formats = []
+
+    built_in_formats = [
+        ('mp4:x264', lambda: _ffmpeg_supports_encoder('libx264')),
+        ('mp4:x264_Nvenc', lambda: _ffmpeg_supports_encoder('h264_nvenc')),
+        ('mp4:H265_Nvenc', lambda: _ffmpeg_supports_encoder('hevc_nvenc')),
+        ('mp4:H264_VideoToolbox', lambda: _ffmpeg_supports_encoder('h264_videotoolbox')),
+        ('mp4:H265_VideoToolbox', lambda: _ffmpeg_supports_encoder('hevc_videotoolbox')),
+        ('mp4:AV1', lambda: _ffmpeg_supports_encoder('libsvtav1')),
+        ('webm:VP8', lambda: _ffmpeg_supports_encoder('libvpx')),
+        ('webm:VP9', lambda: _ffmpeg_supports_encoder('libvpx-vp9')),
+        ('gif', lambda: _ffmpeg_supports_encoder('gif')),
+        ('gifski', lambda: _binary_available('gifski')),
+        ('apng', lambda: _ffmpeg_supports_encoder('apng')),
+    ]
+
+    for output_format, predicate in built_in_formats:
+        try:
+            if predicate():
+                formats.append(output_format)
+        except Exception as e:
+            logging.error("Output format support probe failed for %s", output_format, exc_info=e)
+
+    for fn in os.listdir(customEncoderDir):
+        try:
+            p = os.path.join(customEncoderDir,fn)
+            spec = SpecVideoEncoder(p)
+            if spec.validate():
+                display_name = spec.getDisplayName()
+                if display_name not in formats:
+                    formats.append(display_name)
+        except Exception as e:
+            logging.error("Custom output format probe failed for %s", fn, exc_info=e)
+
+    _available_output_formats_cache = list(formats)
+    return list(formats)
 
 
 class FFmpegService():
@@ -206,6 +346,12 @@ class FFmpegService():
     else:
         atempos.append(target_change)
     return ','.join(['atempo={}'.format(i) for i in atempos])
+
+  def getAvailableOutputFormats(self):
+    return _available_output_formats()
+
+  def resolveOutputFormat(self,outputFormat):
+    return _resolve_output_format(outputFormat)
 
   def getFilteredScreenshot(self,filename,timestamp,filters,n='a'):
       
@@ -832,7 +978,7 @@ class FFmpegService():
       print('\n')
 
 
-      outputFormat  = options.get('outputFormat','webm:VP8')
+      outputFormat  = _resolve_output_format(options.get('outputFormat','webm:VP8'))
       finalEncoder  = encoderMap.get(outputFormat,encoderMap.get('webm:VP8'))
       finalEncoder(inputsList, 
                    outputPathName,
@@ -854,7 +1000,38 @@ class FFmpegService():
       preciseDurations = {}
       infoOut={}
 
-      usNVHWenc = isEnvencSupported() and self.globalOptions.get('alwaysForcenvEncIntermediateFiles',False) or ('_Nvenc' in options.get('outputFormat','mp4:x264') and self.globalOptions.get('nvEncIntermediateFiles',True))
+      requestedOutputFormat = options.get('outputFormat','mp4:x264')
+      resolvedOutputFormat = _resolve_output_format(requestedOutputFormat)
+      useHardwareIntermediate = bool(
+          self.globalOptions.get('alwaysForceHardwareIntermediateFiles',
+                                 self.globalOptions.get('alwaysForcenvEncIntermediateFiles',False))
+      )
+      useHardwareIntermediate = useHardwareIntermediate or (
+          self.globalOptions.get('hardwareIntermediateFiles',
+                                 self.globalOptions.get('nvEncIntermediateFiles',True))
+          and (
+              'Nvenc' in resolvedOutputFormat
+              or 'VideoToolbox' in resolvedOutputFormat
+          )
+      )
+
+      def getIntermediateEncoderPreset():
+        if resolvedOutputFormat == 'mp4:x264_Nvenc' and _ffmpeg_supports_encoder('h264_nvenc'):
+          return ['-c:v', 'h264_nvenc', '-preset', 'losslesshp'], 'yuv420p'
+        if resolvedOutputFormat == 'mp4:H265_Nvenc' and _ffmpeg_supports_encoder('hevc_nvenc'):
+          return ['-c:v', 'hevc_nvenc', '-preset', 'losslesshp'], 'yuv420p'
+        if resolvedOutputFormat == 'mp4:H264_VideoToolbox' and _ffmpeg_supports_encoder('h264_videotoolbox'):
+          return ['-c:v', 'h264_videotoolbox', '-profile:v', 'main'], 'yuv420p'
+        if resolvedOutputFormat == 'mp4:H265_VideoToolbox' and _ffmpeg_supports_encoder('hevc_videotoolbox'):
+          return ['-c:v', 'hevc_videotoolbox', '-profile:v', 'main'], 'yuv420p'
+        if useHardwareIntermediate:
+          if _ffmpeg_supports_encoder('h264_videotoolbox'):
+            return ['-c:v', 'h264_videotoolbox', '-profile:v', 'main'], 'yuv420p'
+          if _ffmpeg_supports_encoder('h264_nvenc'):
+            return ['-c:v', 'h264_nvenc', '-preset', 'losslesshp'], 'yuv420p'
+        return ['-c:v', 'libx264', '-preset', 'veryfast'], self.globalOptions.get('intermediatePixelFormat',"yuv420p10le")
+
+      intermediateVideoPreset, intermediatePixelFormat = getIntermediateEncoderPreset()
 
       fadeStartToEnd = options.get('fadeStartToEnd',True)
 
@@ -975,7 +1152,7 @@ class FFmpegService():
             basename = os.path.basename(clipfilename)
             basename = ''.join([x for x in basename if x in string.digits+string.ascii_letters+' -_'])[:50]
 
-            outname = '{}_{}_{}_{}_{}_{}_{}.mp4'.format(i,basename,start,end,filterHash,runNumber,int(usNVHWenc))
+            outname = '{}_{}_{}_{}_{}_{}_{}.mp4'.format(i,basename,start,end,filterHash,runNumber,int(useHardwareIntermediate))
             outname = os.path.join( tempPathname,outname )
 
             preciseDurations[outname] = end-start
@@ -997,12 +1174,10 @@ class FFmpegService():
               if 'Stereo' in options.get('audioChannels',''):
                 audioChannels = '2'
 
-              intermediatePixelFormat = self.globalOptions.get('intermediatePixelFormat',"yuv420p10le")
-
-              if usNVHWenc:
-                if self.globalOptions.get('passCudaFlags',False):
+              if useHardwareIntermediate:
+                if self.globalOptions.get('passCudaFlags',False) and resolvedOutputFormat.endswith('Nvenc'):
                   cuda_flags = ['-hwaccel', 'cuda']
-                slice_encoder_preset = ['-c:v', 'h264_nvenc' , '-preset', 'losslesshp','-pix_fmt',intermediatePixelFormat]
+                slice_encoder_preset = intermediateVideoPreset + ['-pix_fmt', intermediatePixelFormat]
                 filterexp += ',format='+intermediatePixelFormat
               else:
                 slice_encoder_preset = ['-c:v', 'libx264' , '-preset', 'veryfast','-pix_fmt',intermediatePixelFormat]
@@ -1942,7 +2117,7 @@ class FFmpegService():
           elif requestType == 'GetAutoCropCoords':
 
             start = options.get('start',0)
-            audocropcmd = ["ffmpeg", "-ss", str(start), "-i", cleanFilenameForFfmpeg(filename) , "-t", "1", "-filter_complex", "cropdetect", "-f", "null", "NUL"]
+            audocropcmd = ["ffmpeg", "-ss", str(start), "-i", cleanFilenameForFfmpeg(filename) , "-t", "1", "-filter_complex", "cropdetect", "-f", "null", os.devnull]
             popen_params = {
               "bufsize": 10 ** 5,
               "stdout": sp.PIPE,
@@ -2165,7 +2340,7 @@ class FFmpegService():
               lastTimestamp=a    
               timetampOffset=a
 
-            cmd = ['ffmpeg']+rangeClause+['-i',cleanFilenameForFfmpeg(filename),'-filter_complex','select=gt(scene\\,{threshold}),showinfo'.format(threshold=threshold), '-f', 'null', 'NUL']
+            cmd = ['ffmpeg']+rangeClause+['-i',cleanFilenameForFfmpeg(filename),'-filter_complex','select=gt(scene\\,{threshold}),showinfo'.format(threshold=threshold), '-f', 'null', os.devnull]
             print(' '.join(cmd))
             proc = sp.Popen(
               cmd  
