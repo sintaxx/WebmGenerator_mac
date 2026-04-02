@@ -1,13 +1,16 @@
-
-
-import tkinter as tk
-import tkinter.ttk as ttk
 import time
 import numpy as np
 from math import sqrt
-from tkinter.filedialog import askopenfilename
 import threading
 import os
+import logging
+
+from PySide6.QtWidgets import (
+    QWidget, QLabel, QSlider, QDoubleSpinBox, QSpinBox, QLineEdit,
+    QCheckBox, QComboBox, QPushButton, QHBoxLayout, QFileDialog
+)
+from PySide6.QtCore import Qt
+
 
 def cubic_interp1d(x0, x, y):
 
@@ -45,13 +48,11 @@ def cubic_interp1d(x0, x, y):
     Bi = 0.0
     z[i] = (Bi - Li_1[i-1]*z[i-1])/Li[i]
 
-    
     i = size-1
     z[i] = z[i] / Li[i]
     for i in range(size-2, -1, -1):
         z[i] = (z[i] - Li_1[i-1]*z[i+1])/Li[i]
 
-    
     index = x.searchsorted(x0)
     np.clip(index, 1, size-1, index)
 
@@ -87,463 +88,600 @@ def debounce(wait):
         return debounced
     return decorator
 
-class FilterValuePair(ttk.Frame):
-  def __init__(self, master,controller,param, *args, **kwargs):
-    ttk.Frame.__init__(self, master)
-    self.param = param
-    self.controller=controller
-    self.frameFilterValuePair = self
-    self.labelfilterValueLabel = ttk.Label(self.frameFilterValuePair)
-    self.fileCategory = param.get('fileCategory',None)
-    self.keyValues= self.param.get('keyValues',{})
-    self.applyStartTimeOffset = self.param.get('offsetClipStartSeconds',False)
-    self.valueVar = tk.StringVar()
 
-    self.videoSpaceAxis = self.param.get('videoSpaceAxis',None)
-    self.videoSpaceSign = self.param.get('videoSpaceSign',0)
+class FilterValuePair(QWidget):
+    def __init__(self, master, controller, param, *args, **kwargs):
+        QWidget.__init__(self, master)
+        self.param = param
+        self.controller = controller
+        self.fileCategory = param.get('fileCategory', None)
+        self.keyValues = self.param.get('keyValues', {})
+        self.applyStartTimeOffset = self.param.get('offsetClipStartSeconds', False)
 
-    self.n = self.param['n']
-    self.vmin,self.vmax = float('-inf'),float('inf')
-    self.rectProp = param.get('rectProp')
-    self.rectPropGroup = param.get('rectPropGroup')
-    if param.get('rectProp') is not None:
-      self.controller.registerRectProp(param.get('rectProp'),self.valueVar,param.get('type','int'))
+        # Replace tk.StringVar with a plain Python string attribute
+        self._valueVar = str(param.get('d', ''))
 
-    self.commandVarSelected  = False
-    self.commandVarAvaliable = False 
-    self.commandVarEnabled   = False
-    self.commandvarName      = None
-    self.interpolationFactor = param.get('interpolationFactor',0)
-    self.commandInterpolationMode = param.get('interpMode','lerp')
-    self.interpolationModes = param.get('restrictedInterpModes',['lerp','lerp-smooth','lerp-smooth-2nd','lerp-sigmoid','lerp-smooth-inv','neighbour'])
-    self.interpVar = tk.StringVar()
-    self.interpVar.set(self.commandInterpolationMode)
+        self.videoSpaceAxis = self.param.get('videoSpaceAxis', None)
+        self.videoSpaceSign = self.param.get('videoSpaceSign', 0)
 
-    self.originalIncrement = param.get('inc',1)
-    self.interpVar.trace('w',self.interpolationChanged)
+        self.n = self.param['n']
+        self.vmin, self.vmax = float('-inf'), float('inf')
+        self.rectProp = param.get('rectProp')
+        self.rectPropGroup = param.get('rectPropGroup')
+        if param.get('rectProp') is not None:
+            self.controller.registerRectProp(param.get('rectProp'), self, param.get('type', 'int'))
 
-    self.commandVarTarget = []
-    self.commandVarProperty = []
+        self.commandVarSelected  = False
+        self.commandVarAvaliable = False
+        self.commandVarEnabled   = False
+        self.commandvarName      = None
+        self.interpolationFactor = param.get('interpolationFactor', 0)
+        self.commandInterpolationMode = param.get('interpMode', 'lerp')
+        self.interpolationModes = param.get('restrictedInterpModes', [
+            'lerp', 'lerp-smooth', 'lerp-smooth-2nd', 'lerp-sigmoid',
+            'lerp-smooth-inv', 'neighbour'
+        ])
+        self._interpVar = self.commandInterpolationMode
 
-    if len(param.get('commandVar',[]))==2:
-      self.commandVarAvaliable  = True 
-      self.commandVarEnabled    = False
-      self.commandVarSelected   = False
-      self.commandvarName, targetPairs = param['commandVar']
+        self.originalIncrement = param.get('inc', 1)
 
-      for cmdTarget,cmdProp in targetPairs:
-        self.commandVarTarget.append(cmdTarget)
-        self.commandVarProperty.append(cmdProp)
+        self.commandVarTarget   = []
+        self.commandVarProperty = []
 
+        # Build layout
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(4)
+        self.setLayout(layout)
 
-      self.commandButton = ttk.Button(self.frameFilterValuePair)
-      self.commandButton.config(text='T', style='smallOnechar.TButton',command=self.toggleTimelineCmdMode) 
-      self.commandButton.pack(expand='false', side='left')
+        # Timeline / command-var buttons (conditional)
+        if len(param.get('commandVar', [])) == 2:
+            self.commandVarAvaliable = True
+            self.commandVarEnabled   = False
+            self.commandVarSelected  = False
+            self.commandvarName, targetPairs = param['commandVar']
 
-      self.commandSelectButton = ttk.Button(self.frameFilterValuePair)
-      self.commandSelectButton.config(text='S',state='disabled', style='smallOnechar.TButton',command=self.toggleTimelineSelection) 
-      self.commandSelectButton.pack(expand='false', side='left')
+            for cmdTarget, cmdProp in targetPairs:
+                self.commandVarTarget.append(cmdTarget)
+                self.commandVarProperty.append(cmdProp)
 
-    self.entryInterpValue = ttk.Combobox(self.frameFilterValuePair)
-    self.entryInterpValue.config(textvariable=self.interpVar)
-    self.entryInterpValue.config(values=self.interpolationModes)
+            self.commandButton = QPushButton('T', self)
+            self.commandButton.setFixedWidth(22)
+            self.commandButton.clicked.connect(self.toggleTimelineCmdMode)
+            layout.addWidget(self.commandButton)
 
+            self.commandSelectButton = QPushButton('S', self)
+            self.commandSelectButton.setFixedWidth(22)
+            self.commandSelectButton.setEnabled(False)
+            self.commandSelectButton.clicked.connect(self.toggleTimelineSelection)
+            layout.addWidget(self.commandSelectButton)
 
+        # Interpolation mode combobox (hidden by default, shown when timeline selected)
+        self.entryInterpValue = QComboBox(self)
+        self.entryInterpValue.addItems(self.interpolationModes)
+        idx = self.interpolationModes.index(self.commandInterpolationMode) \
+              if self.commandInterpolationMode in self.interpolationModes else 0
+        self.entryInterpValue.setCurrentIndex(idx)
+        self.entryInterpValue.currentTextChanged.connect(self._on_interp_changed)
+        self.entryInterpValue.hide()
 
-    if param.get('desc','') != '':
-      self.labelfilterValueLabel.config(text=param['n']+' ('+param['desc']+')')
-    else:
-      self.labelfilterValueLabel.config(text=param['n'])
+        # Label
+        if param.get('desc', '') != '':
+            labelText = param['n'] + ' (' + param['desc'] + ')'
+        else:
+            labelText = param['n']
+        self.labelfilterValueLabel = QLabel(labelText, self)
+        layout.addWidget(self.labelfilterValueLabel, stretch=1)
 
-    self.labelfilterValueLabel.pack(expand='true', fill='x', side='left')
+        # Value widget — varies by type
+        ptype = param['type']
 
-    if param['type'] == 'cycle':
-      self.selectableValues = param['cycle']
-      self.valueVar.set(param['d'])
-      self.entryFilterValueValue = ttk.Combobox(self.frameFilterValuePair)
-      self.entryFilterValueValue.config(textvariable=self.valueVar)
-      self.entryFilterValueValue.config(values=self.selectableValues)
-      #self.entryFilterValueValue.config(state='readonly')
-    elif param['type'] == 'float':
-      self.valueVar.set(param['d'])
-      if param.get('range') is None:
-        vmin,vmax = float('-inf'),float('inf')
-      else:
-        vmin,vmax = param['range']
-        if vmin is None:
-          vmin = float('-inf')
-        if vmax is None:
-          vmax = float('inf')
-      self.vmin,self.vmax = vmin,vmax
-      self.entryFilterValueValue = ttk.Spinbox(self.frameFilterValuePair)
-      self.entryFilterValueValue.config(textvariable=self.valueVar)
-      self.entryFilterValueValue.config(from_=vmin)
-      self.entryFilterValueValue.config(to=vmax)
-      self.entryFilterValueValue.config(increment=param['inc'])
-      
-      self.entryFilterValueValue.bind('<KeyPress>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<KeyRelease>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Motion>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<MouseWheel>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<FocusIn>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<FocusOut>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Enter>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Leave>',self.checkCtrl)
+        if ptype == 'cycle':
+            self.selectableValues = param['cycle']
+            self._valueVar = str(param['d'])
+            self.entryFilterValueValue = QComboBox(self)
+            self.entryFilterValueValue.addItems([str(v) for v in self.selectableValues])
+            cur = str(param['d'])
+            if cur in [str(v) for v in self.selectableValues]:
+                self.entryFilterValueValue.setCurrentText(cur)
+            self.entryFilterValueValue.currentTextChanged.connect(self._on_value_changed)
 
-    elif param['type'] == 'string' or param['type'] == 'bareString':
-      self.valueVar.set(param['d'])
-      self.entryFilterValueValue = ttk.Entry(self.frameFilterValuePair)
-      self.entryFilterValueValue.config(textvariable=self.valueVar)
-    elif param['type'] == 'int':
-      self.entryFilterValueValue = ttk.Spinbox(self.frameFilterValuePair)
-      self.entryFilterValueValue.config(textvariable=self.valueVar)
-      self.valueVar.set(param['d'])
-      if param.get('range') is None:
-        vmin,vmax = float('-inf'),float('inf')
-      else:
-        vmin,vmax = param['range']
-        if vmin is None:
-          vmin = float('-inf')
-        if vmax is None:
-          vmax = float('inf')
-      self.vmin,self.vmax = vmin,vmax
-      self.entryFilterValueValue.config(from_=vmin)
-      self.entryFilterValueValue.config(to=vmax)
-      self.entryFilterValueValue.config(increment=param['inc'])
+        elif ptype == 'float':
+            self._valueVar = str(param['d'])
+            if param.get('range') is None:
+                vmin, vmax = float('-inf'), float('inf')
+            else:
+                vmin, vmax = param['range']
+                if vmin is None:
+                    vmin = float('-inf')
+                if vmax is None:
+                    vmax = float('inf')
+            self.vmin, self.vmax = vmin, vmax
 
-      self.entryFilterValueValue.bind('<KeyPress>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<KeyRelease>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Motion>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<MouseWheel>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<FocusIn>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<FocusOut>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Enter>',self.checkCtrl)
-      self.entryFilterValueValue.bind('<Leave>',self.checkCtrl)
+            self.entryFilterValueValue = QDoubleSpinBox(self)
+            # QDoubleSpinBox needs finite bounds
+            safe_min = vmin if vmin != float('-inf') else -1e18
+            safe_max = vmax if vmax != float('inf') else 1e18
+            self.entryFilterValueValue.setRange(safe_min, safe_max)
+            self.entryFilterValueValue.setSingleStep(float(param.get('inc', 1)))
+            self.entryFilterValueValue.setDecimals(6)
+            try:
+                self.entryFilterValueValue.setValue(float(param['d']))
+            except (ValueError, TypeError):
+                pass
+            self.entryFilterValueValue.valueChanged.connect(self._on_spinbox_changed)
+            # Ctrl/Shift modifier for step size
+            self.entryFilterValueValue.installEventFilter(self)
 
-    elif param['type'] == 'file':
-      self.valueVar.set(param['d'])
-      self.entryFilterValueValue = ttk.Button(self.frameFilterValuePair)
-      self.entryFilterValueValue.config(text='File: {}'.format(self.valueVar.get()[-20:]),command=self.selectFile)
-    else:
-      logging.error("Unhandled param {}".format(str(param)))
+        elif ptype in ('string', 'bareString'):
+            self._valueVar = str(param['d'])
+            self.entryFilterValueValue = QLineEdit(self)
+            self.entryFilterValueValue.setText(self._valueVar)
+            self.entryFilterValueValue.textChanged.connect(self._on_value_changed)
 
+        elif ptype == 'int':
+            self._valueVar = str(param['d'])
+            if param.get('range') is None:
+                vmin, vmax = float('-inf'), float('inf')
+            else:
+                vmin, vmax = param['range']
+                if vmin is None:
+                    vmin = float('-inf')
+                if vmax is None:
+                    vmax = float('inf')
+            self.vmin, self.vmax = vmin, vmax
 
-    self.entryFilterValueValue.pack(side='right')
+            self.entryFilterValueValue = QDoubleSpinBox(self)
+            safe_min = vmin if vmin != float('-inf') else -1e18
+            safe_max = vmax if vmax != float('inf') else 1e18
+            self.entryFilterValueValue.setRange(safe_min, safe_max)
+            self.entryFilterValueValue.setSingleStep(float(param.get('inc', 1)))
+            self.entryFilterValueValue.setDecimals(0)
+            try:
+                self.entryFilterValueValue.setValue(float(param['d']))
+            except (ValueError, TypeError):
+                pass
+            self.entryFilterValueValue.valueChanged.connect(self._on_spinbox_changed)
+            self.entryFilterValueValue.installEventFilter(self)
 
-    self.frameFilterValuePair.config(height='200', width='200')
-    self.frameFilterValuePair.pack(expand='true', fill='x', side='top')
-    self.valueVar.trace("w", self.valueUpdated)
+        elif ptype == 'file':
+            self._valueVar = str(param['d'])
+            self.entryFilterValueValue = QPushButton(
+                'File: {}'.format(self._valueVar[-20:]), self
+            )
+            self.entryFilterValueValue.clicked.connect(self.selectFile)
 
-    self.commandVarSelected = self.param.get('commandVarSelected',False)
-    self.commandVarEnabled  = self.param.get('commandVarEnabled',False)
-    self.updateCommandButtonStyles()
+        else:
+            logging.error("Unhandled param {}".format(str(param)))
+            self.entryFilterValueValue = QLineEdit(self)
+            self.entryFilterValueValue.setText(str(param.get('d', '')))
+            self.entryFilterValueValue.textChanged.connect(self._on_value_changed)
 
-  def checkCtrl(self,e):
-    ctrl=False
-    shift=False
+        layout.addWidget(self.entryFilterValueValue)
+        layout.addWidget(self.entryInterpValue)
 
-    try:
-        ctrl  = e and type(e.state) != str and ((e.state & 0x4)  != 0)
-        shift = e and type(e.state) != str and ((e.state & 0x1)  != 0)
-    except Exception  as e:
-        print(e)
+        # Apply initial command-var state
+        self.commandVarSelected = self.param.get('commandVarSelected', False)
+        self.commandVarEnabled  = self.param.get('commandVarEnabled', False)
+        self.updateCommandButtonStyles()
 
-    if ctrl and not shift:
-      self.entryFilterValueValue.config(increment=self.originalIncrement*10)
-    elif shift:
-      self.entryFilterValueValue.config(increment=self.originalIncrement*100)
-    else:
-      self.entryFilterValueValue.config(increment=self.originalIncrement)
+    # ------------------------------------------------------------------
+    # Backward-compat shim: parent containers may call .pack(...)
+    # ------------------------------------------------------------------
+    def pack(self, *args, **kwargs):
+        pass
 
+    # ------------------------------------------------------------------
+    # valueVar property — emulates tk.StringVar get()/set() interface
+    # ------------------------------------------------------------------
+    class _ValueVarProxy:
+        """Thin proxy so that code calling self.valueVar.get() / .set() still works."""
+        def __init__(self, owner):
+            self._owner = owner
 
-  def updateCommandButtonStyles(self):
-    if self.commandVarAvaliable:
-      if self.commandVarSelected:
-        self.commandSelectButton.config(style='smallOnecharenabled.TButton')
-        self.config(style='selectedCommandFrame.TFrame')
-        self.labelfilterValueLabel.config(style='selectedCommandFrame.TLabel')
-        self.entryInterpValue['state']='disabled'
-        self.entryFilterValueValue.pack_forget()
-        self.entryInterpValue.pack(side='right')
-      else:
-        self.commandSelectButton.config(style='smallOnechar.TButton') 
-        self.config(style='TFrame')
-        self.labelfilterValueLabel.config(style='TLabel')
-        self.entryInterpValue['state']='normal'
-        self.entryInterpValue.pack_forget()
-        self.entryFilterValueValue.pack(side='right')  
+        def get(self):
+            return self._owner._valueVar
 
-      if self.commandVarEnabled:
-        self.commandButton.config(style='smallOnecharenabled.TButton') 
-        self.commandSelectButton['state']='normal'
-      else:
-        self.commandButton.config(style='smallOnechar.TButton')
-        self.commandSelectButton['state']='disabled' 
+        def set(self, value):
+            self._owner._valueVar = str(value)
+            self._owner._sync_widget_to_var()
 
-  def interpolationChanged(self,*args):
-    newmode = self.interpVar.get()
-    if newmode in self.interpolationModes:
-      self.commandInterpolationMode = newmode
-      self.controller.recaculateFilters('interpolationChanged')
-    else:
-      self.interpVar.set(self.commandInterpolationMode)
+    @property
+    def valueVar(self):
+        if not hasattr(self, '_valueVarProxy'):
+            self._valueVarProxy = FilterValuePair._ValueVarProxy(self)
+        return self._valueVarProxy
 
-  def cycleSelectedPropertySameGroup(self):
-    self.controller.cycleSelectedPropertySameGroup(self)
+    # ------------------------------------------------------------------
+    # interpVar property — emulates tk.StringVar for interpolation mode
+    # ------------------------------------------------------------------
+    class _InterpVarProxy:
+        def __init__(self, owner):
+            self._owner = owner
 
-  def cycleSelectedProperty(self):
-    self.controller.cycleSelectedProperty(self)
+        def get(self):
+            return self._owner._interpVar
 
-  def clearKeyValues(self):
-    self.keyValues={}
+        def set(self, value):
+            self._owner._interpVar = str(value)
+            if hasattr(self._owner, 'entryInterpValue'):
+                self._owner.entryInterpValue.blockSignals(True)
+                self._owner.entryInterpValue.setCurrentText(str(value))
+                self._owner.entryInterpValue.blockSignals(False)
 
-  def getBoundingBox(self,seconds):
-    box = self.controller.getBoundingBox(seconds)
-    print(box)
-    return box
+    @property
+    def interpVar(self):
+        if not hasattr(self, '_interpVarProxy'):
+            self._interpVarProxy = FilterValuePair._InterpVarProxy(self)
+        return self._interpVarProxy
 
-  def getPredictedValue(self,seconds):
-    kvs = self.getKeyValues()
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _on_value_changed(self, text):
+        """Called when a QLineEdit / QComboBox text changes."""
+        self._valueVar = str(text)
+        self.valueUpdated()
 
-    lower = [(k,v) for k,v,_ in kvs if k<seconds][-1:]
-    upper = [(k,v) for k,v,_ in sorted(kvs,reverse=True) if k>seconds][-1:]
+    def _on_spinbox_changed(self, value):
+        """Called when a QDoubleSpinBox value changes."""
+        self._valueVar = str(value)
+        self.valueUpdated()
 
-    if len(lower)==1 and len(upper)==1:
-        neighbourRange    = upper[0][1]-lower[0][1]
-        neighbourDuration = upper[0][0]-lower[0][0]
-        percent = (seconds-lower[0][0])/neighbourDuration
-        return self.convertKeyValueToType(  lower[0][1]+(neighbourRange*percent) )
-    elif len(lower)==1:
-        return self.convertKeyValueToType( lower[0][1])
-    elif len(upper)==1:
-        return self.convertKeyValueToType( upper[0][1])
-    else:
-        return self.convertKeyValueToType(self.convertKeyValueToType(self.valueVar.get()))
+    def _on_interp_changed(self, text):
+        self._interpVar = text
+        self.interpolationChanged()
 
-  def addKeyValue(self,seconds,value=None,useIncrementMultiplier=False,isAsoluteValue=False):
-    try:
-      if isAsoluteValue and value is not None:
-        self.keyValues[seconds]= self.convertKeyValueToType(  (float(self.param.get('inc',1)) if useIncrementMultiplier else 1)*value )
-      else:
+    def _sync_widget_to_var(self):
+        """Push _valueVar back into the visible widget (used by valueVar.set())."""
+        w = getattr(self, 'entryFilterValueValue', None)
+        if w is None:
+            return
+        ptype = self.param.get('type', '')
+        if isinstance(w, (QDoubleSpinBox, QSpinBox)):
+            w.blockSignals(True)
+            try:
+                w.setValue(float(self._valueVar))
+            except (ValueError, TypeError):
+                pass
+            w.blockSignals(False)
+        elif isinstance(w, QLineEdit):
+            w.blockSignals(True)
+            w.setText(self._valueVar)
+            w.blockSignals(False)
+        elif isinstance(w, QComboBox):
+            w.blockSignals(True)
+            w.setCurrentText(self._valueVar)
+            w.blockSignals(False)
+        elif isinstance(w, QPushButton) and ptype == 'file':
+            w.setText('File: {}'.format(self._valueVar[-20:]))
 
-        incrementValue = 0
-        if value is not None:
-          incrementValue=value
-        if useIncrementMultiplier:
-          incrementValue=value*self.param.get('inc',1)
+    # ------------------------------------------------------------------
+    # Qt event filter — replicate Ctrl/Shift step-size modifiers
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        if obj is getattr(self, 'entryFilterValueValue', None):
+            if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease,
+                                 QEvent.Type.Wheel):
+                modifiers = event.modifiers() if hasattr(event, 'modifiers') else Qt.NoModifier
+                ctrl  = bool(modifiers & Qt.ControlModifier)
+                shift = bool(modifiers & Qt.ShiftModifier)
+                self._apply_increment_modifier(ctrl, shift)
+        return super().eventFilter(obj, event)
 
+    def _apply_increment_modifier(self, ctrl, shift):
+        w = getattr(self, 'entryFilterValueValue', None)
+        if not isinstance(w, (QDoubleSpinBox, QSpinBox)):
+            return
+        if ctrl and not shift:
+            w.setSingleStep(self.originalIncrement * 10)
+        elif shift:
+            w.setSingleStep(self.originalIncrement * 100)
+        else:
+            w.setSingleStep(self.originalIncrement)
+
+    def checkCtrl(self, e):
+        """Retained for any code that calls this directly (was a Tk binding)."""
+        pass
+
+    # ------------------------------------------------------------------
+    # Command-button / timeline UI
+    # ------------------------------------------------------------------
+    def updateCommandButtonStyles(self):
+        if not self.commandVarAvaliable:
+            return
+
+        if self.commandVarSelected:
+            self.commandSelectButton.setStyleSheet('font-weight: bold; color: #00aaff;')
+            self.setStyleSheet('background-color: #1a2a3a;')
+            self.labelfilterValueLabel.setStyleSheet('color: #00aaff;')
+            self.entryFilterValueValue.hide()
+            self.entryInterpValue.show()
+        else:
+            self.commandSelectButton.setStyleSheet('')
+            self.setStyleSheet('')
+            self.labelfilterValueLabel.setStyleSheet('')
+            self.entryInterpValue.hide()
+            self.entryFilterValueValue.show()
+
+        if self.commandVarEnabled:
+            self.commandButton.setStyleSheet('font-weight: bold; color: #00aaff;')
+            self.commandSelectButton.setEnabled(True)
+        else:
+            self.commandButton.setStyleSheet('')
+            self.commandSelectButton.setEnabled(False)
+
+    def interpolationChanged(self, *args):
+        newmode = self._interpVar
+        if newmode in self.interpolationModes:
+            self.commandInterpolationMode = newmode
+            self.controller.recaculateFilters('interpolationChanged')
+        else:
+            self._interpVar = self.commandInterpolationMode
+            if hasattr(self, 'entryInterpValue'):
+                self.entryInterpValue.blockSignals(True)
+                self.entryInterpValue.setCurrentText(self.commandInterpolationMode)
+                self.entryInterpValue.blockSignals(False)
+
+    def cycleSelectedPropertySameGroup(self):
+        self.controller.cycleSelectedPropertySameGroup(self)
+
+    def cycleSelectedProperty(self):
+        self.controller.cycleSelectedProperty(self)
+
+    def clearKeyValues(self):
+        self.keyValues = {}
+
+    def getBoundingBox(self, seconds):
+        box = self.controller.getBoundingBox(seconds)
+        print(box)
+        return box
+
+    def getPredictedValue(self, seconds):
         kvs = self.getKeyValues()
 
-        lower = [(k,v) for k,v,_ in kvs if k<seconds][-1:]
-        upper = [(k,v) for k,v,_ in sorted(kvs,reverse=True) if k>seconds][-1:]
+        lower = [(k, v) for k, v, _ in kvs if k < seconds][-1:]
+        upper = [(k, v) for k, v, _ in sorted(kvs, reverse=True) if k > seconds][-1:]
 
-        if len(lower)==1 and len(upper)==1:
-          neighbourRange    = upper[0][1]-lower[0][1]
-          neighbourDuration = upper[0][0]-lower[0][0]
-          percent = (seconds-lower[0][0])/neighbourDuration
-
-          self.keyValues[seconds]= self.convertKeyValueToType(  lower[0][1]+(neighbourRange*percent)+incrementValue )
-        
-        elif len(lower)==1:
-          self.keyValues[seconds]= self.convertKeyValueToType( lower[0][1]+incrementValue )
-        elif len(upper)==1:
-          self.keyValues[seconds]= self.convertKeyValueToType( upper[0][1]+incrementValue )
+        if len(lower) == 1 and len(upper) == 1:
+            neighbourRange    = upper[0][1] - lower[0][1]
+            neighbourDuration = upper[0][0] - lower[0][0]
+            percent = (seconds - lower[0][0]) / neighbourDuration
+            return self.convertKeyValueToType(lower[0][1] + (neighbourRange * percent))
+        elif len(lower) == 1:
+            return self.convertKeyValueToType(lower[0][1])
+        elif len(upper) == 1:
+            return self.convertKeyValueToType(upper[0][1])
         else:
-          valueVarInc=0
-          try:
-            valueVarInc+=self.convertKeyValueToType(self.valueVar.get())
-          except Exception as e:
-            print("valueVarInc Exception",e)
-          self.keyValues[seconds]= self.convertKeyValueToType(valueVarInc+incrementValue)
+            return self.convertKeyValueToType(self.convertKeyValueToType(self._valueVar))
 
-    except Exception as e:
-      self.keyValues[seconds]= self.convertKeyValueToType(self.param['d'])
-      print('addKeyValue Exception',e)
+    def addKeyValue(self, seconds, value=None, useIncrementMultiplier=False, isAsoluteValue=False):
+        try:
+            if isAsoluteValue and value is not None:
+                self.keyValues[seconds] = self.convertKeyValueToType(
+                    (float(self.param.get('inc', 1)) if useIncrementMultiplier else 1) * value
+                )
+            else:
+                incrementValue = 0
+                if value is not None:
+                    incrementValue = value
+                if useIncrementMultiplier:
+                    incrementValue = value * self.param.get('inc', 1)
 
-    self.valueUpdated()
+                kvs = self.getKeyValues()
 
+                lower = [(k, v) for k, v, _ in kvs if k < seconds][-1:]
+                upper = [(k, v) for k, v, _ in sorted(kvs, reverse=True) if k > seconds][-1:]
 
-  def removeKeyValue(self,seconds):
-    del self.keyValues[seconds]
-    self.valueUpdated()
+                if len(lower) == 1 and len(upper) == 1:
+                    neighbourRange    = upper[0][1] - lower[0][1]
+                    neighbourDuration = upper[0][0] - lower[0][0]
+                    percent = (seconds - lower[0][0]) / neighbourDuration
+                    self.keyValues[seconds] = self.convertKeyValueToType(
+                        lower[0][1] + (neighbourRange * percent) + incrementValue
+                    )
+                elif len(lower) == 1:
+                    self.keyValues[seconds] = self.convertKeyValueToType(
+                        lower[0][1] + incrementValue
+                    )
+                elif len(upper) == 1:
+                    self.keyValues[seconds] = self.convertKeyValueToType(
+                        upper[0][1] + incrementValue
+                    )
+                else:
+                    valueVarInc = 0
+                    try:
+                        valueVarInc += self.convertKeyValueToType(self._valueVar)
+                    except Exception as e:
+                        print("valueVarInc Exception", e)
+                    self.keyValues[seconds] = self.convertKeyValueToType(
+                        valueVarInc + incrementValue
+                    )
 
+        except Exception as e:
+            self.keyValues[seconds] = self.convertKeyValueToType(self.param['d'])
+            print('addKeyValue Exception', e)
 
-  def isInitialTS(self,seconds):
-    if len(self.keyValues)>0:
-      return sorted(self.keyValues.keys())[0]==seconds
-    else:
-      return False
+        self.valueUpdated()
 
-  def incrementAllKeyValues(self,valueOffset,useIncrementMultiplier=True,isAsoluteValue=False):
-    for seconds in self.keyValues:
-      if isAsoluteValue:
-        newval = (valueOffset*(self.param['inc'] if useIncrementMultiplier else 1))
-      else:
-        newval = self.keyValues[seconds]+(valueOffset*(self.param['inc'] if useIncrementMultiplier else 1))
-      newval = max(min(newval,self.vmax),self.vmin)
-      self.keyValues[seconds] = self.convertKeyValueToType(newval)
-    self.valueUpdated()
+    def removeKeyValue(self, seconds):
+        del self.keyValues[seconds]
+        self.valueUpdated()
 
+    def isInitialTS(self, seconds):
+        if len(self.keyValues) > 0:
+            return sorted(self.keyValues.keys())[0] == seconds
+        else:
+            return False
 
-  def incrementKeyValue(self,seconds,valueOffset,useIncrementMultiplier=True,isAsoluteValue=False):
-    if seconds in self.keyValues:
-      
-      if isAsoluteValue:
-        newval = (valueOffset*(self.param['inc'] if useIncrementMultiplier else 1))
-      else:
-        newval = self.keyValues[seconds]+(valueOffset*(self.param['inc'] if useIncrementMultiplier else 1))
+    def incrementAllKeyValues(self, valueOffset, useIncrementMultiplier=True, isAsoluteValue=False):
+        for seconds in self.keyValues:
+            if isAsoluteValue:
+                newval = (valueOffset * (self.param['inc'] if useIncrementMultiplier else 1))
+            else:
+                newval = self.keyValues[seconds] + (valueOffset * (self.param['inc'] if useIncrementMultiplier else 1))
+            newval = max(min(newval, self.vmax), self.vmin)
+            self.keyValues[seconds] = self.convertKeyValueToType(newval)
+        self.valueUpdated()
 
-      newval = max(min(newval,self.vmax),self.vmin)
+    def incrementKeyValue(self, seconds, valueOffset, useIncrementMultiplier=True, isAsoluteValue=False):
+        if seconds in self.keyValues:
+            if isAsoluteValue:
+                newval = (valueOffset * (self.param['inc'] if useIncrementMultiplier else 1))
+            else:
+                newval = self.keyValues[seconds] + (valueOffset * (self.param['inc'] if useIncrementMultiplier else 1))
+            newval = max(min(newval, self.vmax), self.vmin)
+            self.keyValues[seconds] = self.convertKeyValueToType(newval)
+            self.valueUpdated()
 
-      self.keyValues[seconds] = self.convertKeyValueToType(newval)
+    def convertKeyValueToType(self, value):
+        if self.param['type'] == 'int':
+            return int(value)
+        elif self.param['type'] == 'float':
+            return float(value)
+        return value
 
-      self.valueUpdated()
+    def getKeyValues(self, interpolation=True):
+        sortedKVs = sorted(list(self.keyValues.items()).copy())
+        try:
+            if self.interpolationFactor > 0 and interpolation and len(sortedKVs) > 1:
+                x = np.array([x[0] for x in sortedKVs])
+                y = np.array([x[1] for x in sortedKVs])
 
-  def convertKeyValueToType(self,value):
-    if self.param['type'] == 'int':
-      return int(value)
-    elif self.param['type'] == 'float':
-      return float(value)
-    return value
+                x_new = np.linspace(x[0], x[-1], int((x[-1] - x[0]) * int(self.interpolationFactor)))
+                x_new = np.append(x_new, list(self.keyValues.keys()))
 
-  def getKeyValues(self,interpolation=True):
-    
-    sortedKVs = sorted(list(self.keyValues.items()).copy())
-    try:
-      if self.interpolationFactor>0 and interpolation and len(sortedKVs)>1:
+                y_new = cubic_interp1d(x_new, x, y)
 
-        x = np.array([x[0] for x in sortedKVs])
-        y = np.array([x[1] for x in sortedKVs])
+                oldKVS = [(k, v, True) for k, v in sortedKVs]
+                newKVS = [(k, v, False) for k, v, in zip(x_new, y_new) if k not in self.keyValues]
 
-        x_new = np.linspace(x[0], x[-1] , int((x[-1]-x[0])*int(self.interpolationFactor)) )
-        x_new = np.append(x_new,list(self.keyValues.keys()))
+                return sorted(newKVS + oldKVS)
+            else:
+                return [(a, b, True) for a, b, in sortedKVs]
+        except Exception as e:
+            print('getKeyValues Exception', e)
+        return [(a, b, True) for a, b, in sortedKVs]
 
-        y_new  = cubic_interp1d(x_new, x, y)
+    def deactivateTimeLineSection(self):
+        if self.commandVarAvaliable:
+            self.commandVarSelected = False
+            self.updateCommandButtonStyles()
 
-        oldKVS = [(k,v,True) for k,v in sortedKVs]
-        newKVS = [(k,v,False) for k,v, in zip(x_new,y_new) if k not in self.keyValues]
+    def toggleTimelineSelection(self):
+        if self.commandVarAvaliable:
+            if self.commandVarSelected:
+                self.commandVarSelected = False
+                self.controller.setActiveTimeLineValue(None)
+            else:
+                self.commandVarSelected = True
+                self.controller.setActiveTimeLineValue(self)
+            self.updateCommandButtonStyles()
 
-        return sorted( newKVS + oldKVS )
-      else:
-        return [(a,b,True) for a,b, in sortedKVs]
-    except Exception as e:
-      print('getKeyValues Exception',e)
-    return [(a,b,True) for a,b, in sortedKVs]
+    def toggleTimelineCmdMode(self):
+        if self.commandVarAvaliable:
+            if self.commandVarEnabled:
+                self.commandVarEnabled  = False
+                self.commandVarSelected = False
+                self.controller.setActiveTimeLineValue(None)
+                self.updateCommandButtonStyles()
+            else:
+                self.commandVarEnabled = True
+                self.toggleTimelineSelection()
+                self.updateCommandButtonStyles()
+            self.controller.recaculateFilters('toggleTimelineCmdMode')
 
-  def deactivateTimeLineSection(self):
-    if self.commandVarAvaliable:
-      self.commandVarSelected   = False
-      self.updateCommandButtonStyles()
+    def selectFile(self):
+        initialdir = '.'
+        name_filter = 'All files (*.*)'
 
-  def toggleTimelineSelection(self):
-    if self.commandVarAvaliable:
-      if self.commandVarSelected:
-        self.commandVarSelected   = False
-        self.controller.setActiveTimeLineValue(None)
-      else:
-        self.commandVarSelected   = True
-        self.controller.setActiveTimeLineValue(self)
-      self.updateCommandButtonStyles()
+        if self.fileCategory == 'font':
+            initialdir = self.controller.getGlobalOptions().get('defaultFontFolder', '.')
+        elif self.fileCategory == 'subtitle':
+            initialdir = self.controller.getGlobalOptions().get('defaultSubtitleFolder', '.')
+            name_filter = 'Subtitle (*.srt *.ass)'
+        elif self.fileCategory == 'image':
+            initialdir = self.controller.getGlobalOptions().get('defaultImageFolder', '.')
+        elif self.fileCategory == 'video':
+            initialdir = self.controller.getGlobalOptions().get('defaultVideoFolder', '.')
+        elif self.fileCategory == 'audio':
+            initialdir = self.controller.getGlobalOptions().get('defaultAudioFolder', '.')
 
+        print(initialdir, name_filter)
+        fn, _ = QFileDialog.getOpenFileName(self, 'Select file', initialdir, name_filter)
+        if not fn:
+            self.entryFilterValueValue.setText('Select file')
+        else:
+            cleanPath = os.path.abspath(fn).replace('\\', '/').replace(':', '\\:')
+            writeBackPath = os.path.abspath(os.path.dirname(fn))
 
-  def toggleTimelineCmdMode(self):
-    if self.commandVarAvaliable:
-      if self.commandVarEnabled:
-        self.commandVarEnabled  = False
-        self.commandVarSelected =False
-        self.controller.setActiveTimeLineValue(None)
-        self.updateCommandButtonStyles()
-      else:
-        self.commandVarEnabled   = True
-        self.toggleTimelineSelection()
-        self.updateCommandButtonStyles()        
-      self.controller.recaculateFilters('toggleTimelineCmdMode')
+            if self.fileCategory == 'font':
+                self.controller.getGlobalOptions()['defaultFontFolder'] = writeBackPath
+            elif self.fileCategory == 'subtitle':
+                self.controller.getGlobalOptions()['defaultSubtitleFolder'] = writeBackPath
+            elif self.fileCategory == 'image':
+                self.controller.getGlobalOptions()['defaultImageFolder'] = writeBackPath
+            elif self.fileCategory == 'video':
+                self.controller.getGlobalOptions()['defaultVideoFolder'] = writeBackPath
+            elif self.fileCategory == 'audio':
+                self.controller.getGlobalOptions()['defaultAudioFolder'] = writeBackPath
 
-  def selectFile(self):
-    initialdir='.'
-    filetypes=(('All files', '*.*'),)
+            self._valueVar = cleanPath
+            print(self._valueVar)
+            self.entryFilterValueValue.setText('File: {}'.format(self._valueVar[-20:]))
+            self.valueUpdated()
 
-    if self.fileCategory=='font':
-      initialdir=self.controller.getGlobalOptions().get('defaultFontFolder','.')
-    elif self.fileCategory=='subtitle':
-      initialdir=self.controller.getGlobalOptions().get('defaultSubtitleFolder','.')
-      filetypes=(('Subtitle', '*.srt *.ass'),)
-    elif self.fileCategory=='image':
-      initialdir=self.controller.getGlobalOptions().get('defaultImageFolder','.')
-    elif self.fileCategory=='video':
-      initialdir=self.controller.getGlobalOptions().get('defaultVideoFolder','.')
-    elif self.fileCategory=='audio':
-      initialdir=self.controller.getGlobalOptions().get('defaultAudioFolder','.')
+    def stringValueVarSubstitutions(self):
+        valVar = self._valueVar
 
-    print(initialdir,filetypes)
-    fn = askopenfilename(initialdir=initialdir,filetypes=filetypes)
-    if fn is None or len(fn)==0:
-      self.entryFilterValueValue.config(text='Select file')
-    else:
-      cleanPath = os.path.abspath(fn).replace('\\','/').replace(':','\\:')
-      writeBackPath = os.path.abspath(os.path.dirname(fn))
+        if "{!filename}" in valVar:
+            valVar = valVar.replace('{!filename}', self.controller.getStringValue('filename'))
+        elif "{!title}" in valVar:
+            valVar = valVar.replace('{!title}', self.controller.getStringValue('title'))
+        elif "{!path}" in valVar:
+            valVar = valVar.replace('{!path}', self.controller.getStringValue('path'))
+        elif "{!startts}" in valVar:
+            valVar = valVar.replace('{!startts}', self.controller.getStringValue('startts'))
+        elif "{!endts}" in valVar:
+            valVar = valVar.replace('{!endts}', self.controller.getStringValue('endts'))
 
-      if self.fileCategory=='font':
-        self.controller.getGlobalOptions()['defaultFontFolder'] = writeBackPath
-      elif self.fileCategory=='subtitle':
-        self.controller.getGlobalOptions()['defaultSubtitleFolder'] = writeBackPath
-      elif self.fileCategory=='image':
-        self.controller.getGlobalOptions()['defaultImageFolder'] = writeBackPath
-      elif self.fileCategory=='video':
-        self.controller.getGlobalOptions()['defaultVideoFolder'] = writeBackPath
-      elif self.fileCategory=='audio':
-        self.controller.getGlobalOptions()['defaultAudioFolder'] = writeBackPath
-      
-      self.valueVar.set(cleanPath)
-      print(self.valueVar.get())
-      self.entryFilterValueValue.config(text='File: {}'.format(self.valueVar.get()[-20:]))
+        if self._valueVar != valVar:
+            self._valueVar = valVar
+            self._sync_widget_to_var()
 
-  def stringValueVarSubstitutions(self):
-    valVar = self.valueVar.get()
+    def getValuePair(self, forFilter=True):
+        val = self._valueVar
+        if val in ('inf', '-inf', str(float('inf')), str(float('-inf'))):
+            self._valueVar = '0'
+            val = '0'
+            self._sync_widget_to_var()
 
-    if "{!filename}" in valVar:
-      valVar = valVar.replace('{!filename}',self.controller.getStringValue('filename'))
-    elif "{!title}" in valVar:
-      valVar = valVar.replace('{!title}',self.controller.getStringValue('title'))
-    elif "{!path}" in valVar:
-      valVar = valVar.replace('{!path}',self.controller.getStringValue('path'))
-    elif "{!startts}" in valVar:
-      valVar = valVar.replace('{!startts}',self.controller.getStringValue('startts'))
-    elif "{!endts}" in valVar:
-      valVar = valVar.replace('{!endts}',self.controller.getStringValue('endts'))
+        if self.param['type'] == 'string':
+            self.stringValueVarSubstitutions()
+            val = self._valueVar
 
-    if self.valueVar.get() != valVar:
-      self.valueVar.set(valVar)
+            val = val.replace('\\n', '\n')
 
-  def getValuePair(self,forFilter=True):
-    val = self.valueVar.get()
-    if val in ('inf','-inf',float('inf'),float('-inf')):
-      self.valueVar.set(0)
+            if forFilter:
+                outval = []
+                for c in val:
+                    if c == '\\':
+                        outval.append('\\\\')
+                    elif c == '"':
+                        outval.append('\'"\'')
+                    elif c == ':':
+                        outval.append('\\:')
+                    elif c == "'":
+                        outval.append("'\\\\\\''")
+                    else:
+                        outval.append(c)
+                val = ''.join(["'"] + outval + ["'"])
+            return (self.param['n'], "{}".format(val))
+        else:
+            return (self.param['n'], self._valueVar)
 
-    if self.param['type'] == 'string':
-      self.stringValueVarSubstitutions()
-      val = self.valueVar.get()
-
-      val = val.replace('\\n','\n')
-
-      if forFilter:
-        outval  = []
-        for c in val:         
-          if c=='\\':
-            outval.append('\\\\')
-          elif c=='"':
-            outval.append('\'"\'')
-          elif c==':':
-            outval.append('\\:')
-          elif c=="'":
-            outval.append("'\\\\\\''")
-          else:
-            outval.append(c)
-        val = ''.join(["'"]+outval+["'"])
-      return (self.param['n'],"{}".format(val))
-    else:      
-      return (self.param['n'],self.valueVar.get())
-
-  @debounce(0.1)
-  def valueUpdated(self,*args):
-    self.controller.recaculateFilters('debounced valueUpdated')
+    @debounce(0.1)
+    def valueUpdated(self, *args):
+        self.controller.recaculateFilters('debounced valueUpdated')
