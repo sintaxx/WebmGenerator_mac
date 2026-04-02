@@ -24,17 +24,70 @@ except Exception as e:
 os.environ["FREI0R_PATH"] = resource_path("src", "frei0r-1")
 
 
-from tkinter import Tk
-
-try:
-  from tkinterdnd2 import Tk as TkinterDnDTk
-  from tkinterdnd2 import DND_FILES,DND_TEXT,CF_UNICODETEXT,CF_TEXT
-except Exception as e:
-  print(e)
+from PySide6.QtWidgets import QMainWindow, QApplication
+from PySide6.QtCore import Qt, QTimer, QMimeData
+from PySide6.QtGui import QKeyEvent, QCloseEvent, QDropEvent, QDragEnterEvent, QDragLeaveEvent
 
 import json
 import mimetypes
 import random
+
+
+class WebmGeneratorMainWindow(QMainWindow):
+  """QMainWindow subclass that wires close, key, and drag-and-drop events to the controller."""
+
+  def __init__(self, controller):
+    super().__init__()
+    self._controller = controller
+    self.setAcceptDrops(True)
+
+  def closeEvent(self, event: QCloseEvent):
+    self._controller.close_ui()
+    event.accept()
+
+  def keyPressEvent(self, event: QKeyEvent):
+    self._controller.globalKeyCallback(event)
+    super().keyPressEvent(event)
+
+  def dragEnterEvent(self, event: QDragEnterEvent):
+    if event.mimeData().hasUrls() or event.mimeData().hasText():
+      urls = event.mimeData().urls()
+      paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+      n = len(paths)
+      if n > 1 or (n == 1 and __import__('os').path.isdir(paths[0])):
+        self._controller.webmMegeneratorUi.showDrop(n if n > 1 else None)
+      event.acceptProposedAction()
+    else:
+      event.ignore()
+
+  def dragLeaveEvent(self, event):
+    if self._controller.webmMegeneratorUi:
+      self._controller.webmMegeneratorUi.hideDrop()
+
+  def dropEvent(self, event: QDropEvent):
+    mime = event.mimeData()
+    if mime.hasUrls():
+      paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+      self._controller._handleDroppedPaths(paths, event.modifiers() & Qt.ControlModifier)
+    elif mime.hasText():
+      self._controller.cutselectionController.loadVideoYTdlFromClipboard(mime.text())
+    event.acceptProposedAction()
+
+  def resizeEvent(self, event):
+    super().resizeEvent(event)
+    # Keep drop overlay sized to window if visible
+    try:
+      ui = self._controller.webmMegeneratorUi
+      if ui and ui.dropLabel and ui.dropLabel.isVisible():
+        geom = self.centralWidget().rect()
+        ui.dropLabel.setGeometry(geom)
+        if ui.dropAbort:
+          ui.dropAbort.setGeometry(
+            0, int(geom.height() * 0.95),
+            geom.width(), int(geom.height() * 0.05)
+          )
+    except Exception:
+      pass
 
 from .cutselectionUi import CutselectionUi
 from .filterSelectionUi import FilterSelectionUi
@@ -193,36 +246,17 @@ class WebmGeneratorController:
 
     self.initialFiles = self.cleanInitialFiles(initialFiles)
     
-    try:
-      self.root = TkinterDnDTk()
-      self.root.drop_target_register(DND_FILES)
-      self.root.drop_target_register(DND_TEXT)
-
-      self.root.dnd_bind('<<Drop>>',self.loadDrop)
-
-      self.root.dnd_bind('<<DropEnter>>',self.enterDrop)
-      self.root.dnd_bind('<<DropLeave>>',self.leaveDrop)
-
-
-    except Exception as e:
-      self.root = Tk()
-      print(e)
-
-    
-    self.keyQueue=[]
-    self.root.bind_all("<Key>", self.globalKeyCallback)
-
-    self.root.protocol("WM_DELETE_WINDOW", self.close_ui)
-
-    self.webmMegeneratorUi = WebmGeneratorUi(self,self.root)
+    self.keyQueue = []
+    self.mainWindow = WebmGeneratorMainWindow(self)
+    self.webmMegeneratorUi = WebmGeneratorUi(self, self.mainWindow)
 
     self.faceDetectionService = FaceDetectionService(globalStatusCallback=self.webmMegeneratorUi.updateGlobalStatus,
                                                      globalOptions=self.globalOptions)
 
-    self.cutselectionUi     = CutselectionUi(self.root,globalOptions=self.globalOptions)
-    self.filterSselectionUi = FilterSelectionUi(self.root,globalOptions=self.globalOptions,enableFaceDetection=self.faceDetectionService.faceDetectEnabled())
-    self.composeUi   = ComposeUi(self.root,defaultProfile=self.defaultProfile,globalOptions=self.globalOptions)
-    self.mergeSelectionUi   = MergeSelectionUi(self.root,defaultProfile=self.defaultProfile,globalOptions=self.globalOptions)
+    self.cutselectionUi     = CutselectionUi(globalOptions=self.globalOptions)
+    self.filterSselectionUi = FilterSelectionUi(globalOptions=self.globalOptions,enableFaceDetection=self.faceDetectionService.faceDetectEnabled())
+    self.composeUi          = ComposeUi(defaultProfile=self.defaultProfile,globalOptions=self.globalOptions)
+    self.mergeSelectionUi   = MergeSelectionUi(defaultProfile=self.defaultProfile,globalOptions=self.globalOptions)
 
     self.webmMegeneratorUi.addPane(self.cutselectionUi,'Cuts')
     self.webmMegeneratorUi.addPane(self.filterSselectionUi,'Filters')
@@ -244,43 +278,57 @@ class WebmGeneratorController:
 
 
 
-    self.cutselectionController = CutselectionController(self.cutselectionUi,
-                                                         self.initialFiles,
-                                                         self.videoManager,
-                                                         self.ffmpegService,
-                                                         self.ytdlService,
-                                                         self.voiceActivityService,
-                                                         self,
-                                                         self.globalOptions,
-                                                         self.startPoint)
-    print('cutselectionController loaded')
+    self.cutselectionController = None
+    self.filterSelectionController = None
+    self.composeController = None
+    self.mergeSelectionController = None
 
-    self.filterSelectionController = FilterSelectionController(self,
-                                                               self.filterSselectionUi,
+    try:
+      self.cutselectionController = CutselectionController(self.cutselectionUi,
+                                                           self.initialFiles,
+                                                           self.videoManager,
+                                                           self.ffmpegService,
+                                                           self.ytdlService,
+                                                           self.voiceActivityService,
+                                                           self,
+                                                           self.globalOptions,
+                                                           self.startPoint)
+      print('cutselectionController loaded')
+    except Exception as e:
+      logging.error('cutselectionController load failed', exc_info=e)
+
+    try:
+      self.filterSelectionController = FilterSelectionController(self,
+                                                                 self.filterSselectionUi,
+                                                                 self.videoManager,
+                                                                 self.ffmpegService,
+                                                                 self.faceDetectionService,
+                                                                 self.globalOptions)
+      print('filterSelectionController loaded')
+    except Exception as e:
+      logging.error('filterSelectionController load failed', exc_info=e)
+
+    try:
+      self.composeController = ComposeController(self.composeUi,
+                                                 self.videoManager,
+                                                 self.ffmpegService,
+                                                 self.filterSelectionController,
+                                                 self.globalOptions)
+      print('composeController loaded')
+    except Exception as e:
+      logging.error('composeController load failed', exc_info=e)
+
+    try:
+      self.mergeSelectionController = MergeSelectionController(self.mergeSelectionUi,
                                                                self.videoManager,
                                                                self.ffmpegService,
-                                                               self.faceDetectionService,
+                                                               self.filterSelectionController,
+                                                               self.cutselectionController,
+                                                               self,
                                                                self.globalOptions)
-    print('filterSelectionController loaded')
-
-    self.composeController = ComposeController(self.composeUi,
-                                                             self.videoManager,
-                                                             self.ffmpegService,
-                                                             self.filterSelectionController,                                                             
-                                                             self.globalOptions
-                                                             )
-    print('composeController loaded')
-
-
-    self.mergeSelectionController = MergeSelectionController(self.mergeSelectionUi,
-                                                             self.videoManager,
-                                                             self.ffmpegService,
-                                                             self.filterSelectionController,
-                                                             self.cutselectionController,
-                                                             self,
-                                                             self.globalOptions
-                                                             )
-    print('mergeSelectionController loaded')
+      print('mergeSelectionController loaded')
+    except Exception as e:
+      logging.error('mergeSelectionController load failed', exc_info=e)
 
     self.recentlyPlayed = []
     self.recentProjects = []
@@ -412,14 +460,8 @@ class WebmGeneratorController:
 
     return [x for x in dropfiles if x.strip() != '']
 
-  def enterDrop(self,drop):
-    try:
-        dropfiles = self.listdropFiles(drop.data)
-        if len(dropfiles) > 1 or (len(dropfiles) ==1 and os.path.isdir(dropfiles[0]) ):
-            self.webmMegeneratorUi.showDrop(len(dropfiles))
-    except Exception as e:
-        print(e)
-        self.webmMegeneratorUi.hideDrop()
+  def enterDrop(self, drop=None):
+    pass  # Handled by WebmGeneratorMainWindow.dragEnterEvent
 
   def registerComplete(self,filename,clip=None):
 
@@ -431,7 +473,7 @@ class WebmGeneratorController:
 
     self.webmMegeneratorUi.registerComplete(label,filename,img=img)
 
-  def leaveDrop(self,drop):
+  def leaveDrop(self, drop=None):
     self.webmMegeneratorUi.hideDrop()
 
   def toggleCompletedFrame(self):
@@ -440,47 +482,9 @@ class WebmGeneratorController:
   def setAutoConvert(self,state):
     self.autoConvert = state
 
-  def loadDrop(self,drop):
-    print(drop.type)
-    if drop.type in (CF_UNICODETEXT,CF_TEXT):
-      self.cutselectionController.loadVideoYTdlFromClipboard(drop.data)
-      return
-
-    if drop.data in self.dropsToIgnore:
-        return
-
-    print(drop.data)
-    dropfiles = self.listdropFiles(drop.data)
-    
-    print(dropfiles)
-
-    if len(dropfiles)>0:
-
-      if self.globalOptions.get('askToShuffleLoadedFiles',False):
-        if len(dropfiles)>1:
-          response = self.cutselectionUi.confirmWithMessage('Shuffle files?','Do you want to shuffle the order of the dropped files?',icon='warning')
-          if response=='yes':
-            random.shuffle(dropfiles)
-
-      loadOptions={}
-      if 'ctrl' in drop.modifiers:
-        print('getFileLoadOptions enter')
-        loadOptions = self.webmMegeneratorUi.getFileLoadOptions()
-        print('getFileLoadOptions exit')
-
-      self.webmMegeneratorUi.setLoadLabel('Loading files...')
-
-      def doAsyncLoad(dropfiles,loadOptions):
-        print('doAsyncLoad',dropfiles,loadOptions )
-
-        self.cutselectionController.loadFiles(self.cleanInitialFiles(dropfiles,loadOptions=loadOptions))
-        self.cutselectionUi.clearVideoMousePress()
-        self.webmMegeneratorUi.hideDrop()
-
-      self.root.after(0,doAsyncLoad,dropfiles,loadOptions)
-    else:
-      self.cutselectionUi.clearVideoMousePress()
-      self.webmMegeneratorUi.hideDrop()
+  def loadDrop(self, paths, ctrl_held=False):
+    """Legacy entry point kept for compatibility; delegates to _handleDroppedPaths."""
+    self._handleDroppedPaths(paths, ctrl_held)
 
 
   def updateGlobalOptions(self,changedOptions):
@@ -498,24 +502,29 @@ class WebmGeneratorController:
       print('Filter screenshot')
       self.filterSelectionController.takeScreenshotToFile(self.tempFolder,includes='video')
 
-  def globalKeyCallback(self,evt):
-    ctrl  = (evt.state & 0x4) != 0
-    shift = (evt.state & 0x1) != 0
-    
+  def globalKeyCallback(self, evt):
+    from PySide6.QtCore import Qt as _Qt
+    ctrl  = bool(evt.modifiers() & _Qt.ControlModifier)
+    shift = bool(evt.modifiers() & _Qt.ShiftModifier)
+
     if ctrl:
-      if evt.keysym=='q':
-        self.root.destroy()
-      elif evt.keysym=='n':
+      key = evt.key()
+      if key == _Qt.Key_Q:
+        self.mainWindow.close()
+      elif key == _Qt.Key_N:
         self.webmMegeneratorUi.newProject()
-      elif evt.keysym=='b':
+      elif key == _Qt.Key_B:
         self.webmMegeneratorUi.toggleBoringMode()
         self.mergeSelectionUi.toggleBoringMode(self.webmMegeneratorUi.boringMode)
 
-    if ctrl and shift and evt.keysym == 'question':
-        tabName = self.webmMegeneratorUi.getTabName()
-        self.webmMegeneratorUi.toggleHelpFor(tabName)
+    if ctrl and shift and evt.key() == _Qt.Key_Question:
+      tabName = self.webmMegeneratorUi.getTabName()
+      self.webmMegeneratorUi.toggleHelpFor(tabName)
 
-    self.cutselectionController.handleGlobalKeyEvent(evt)
+    try:
+      self.cutselectionController.handleGlobalKeyEvent(evt)
+    except Exception:
+      pass
 
   def autoSaveExists(self):
     return os.path.exists(self.autosaveFilename)
@@ -778,21 +787,20 @@ class WebmGeneratorController:
 
 
     self.shutdown = True
-    self.cutselectionController.close_ui()
-    logging.debug('self.cutselectionController.close_ui()')
+    if self.cutselectionController:
+      self.cutselectionController.close_ui()
     logging.debug('self.ffmpegService.cancelAllEncodeRequests()')
     self.ffmpegService.cancelAllEncodeRequests()
-    logging.debug('self.cutselectionController.close_ui()')
-    self.filterSelectionController.close_ui()
-    logging.debug('self.filterSelectionController.close_ui()')
-    self.mergeSelectionController.close_ui()
-    logging.debug('self.mergeSelectionController.close_ui()')
+    if self.filterSelectionController:
+      self.filterSelectionController.close_ui()
+    if self.mergeSelectionController:
+      self.mergeSelectionController.close_ui()
     self.webmMegeneratorUi.close_ui()
 
     try:
-      self.root.destroy()
+      self.mainWindow.close()
     except Exception as e:
-      logging.error("root.destroy() Exception",exc_info=e)
+      logging.error("mainWindow.close() Exception",exc_info=e)
 
     print('temp clean up start')
     if os.path.exists(self.tempFolder):
@@ -814,6 +822,34 @@ class WebmGeneratorController:
     print('download clean up end')
 
     
+  def _handleDroppedPaths(self, paths, ctrl_held=False):
+    """Called by WebmGeneratorMainWindow.dropEvent with a list of local file paths."""
+    if not paths:
+      self.cutselectionUi.clearVideoMousePress()
+      self.webmMegeneratorUi.hideDrop()
+      return
+
+    if self.globalOptions.get('askToShuffleLoadedFiles', False) and len(paths) > 1:
+      response = self.cutselectionUi.confirmWithMessage(
+        'Shuffle files?', 'Do you want to shuffle the order of the dropped files?', icon='warning'
+      )
+      if response == 'yes':
+        import random as _random
+        _random.shuffle(paths)
+
+    loadOptions = {}
+    if ctrl_held:
+      loadOptions = self.webmMegeneratorUi.getFileLoadOptions()
+
+    self.webmMegeneratorUi.setLoadLabel('Loading files...')
+
+    def doAsyncLoad(dropfiles, loadOptions):
+      self.cutselectionController.loadFiles(self.cleanInitialFiles(dropfiles, loadOptions=loadOptions))
+      self.cutselectionUi.clearVideoMousePress()
+      self.webmMegeneratorUi.hideDrop()
+
+    QTimer.singleShot(0, lambda df=paths, lo=loadOptions: doAsyncLoad(df, lo))
+
   def __call__(self):
     self.webmMegeneratorUi.run()
     logging.debug('EXIT')

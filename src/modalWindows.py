@@ -1,7 +1,76 @@
 
-import tkinter as tk
-from tkinter import ttk
-from tkinter.filedialog import askopenfilename
+try:
+  import tkinter as tk
+  from tkinter import ttk
+  from tkinter.filedialog import askopenfilename
+except ImportError:
+  # Provide stub objects so class definitions don't fail at parse time.
+  # All Tk-based modal classes will be replaced with QDialog subclasses in Phase 2.
+  class _TkStub:
+    """Stub that absorbs attribute access so class bodies don't fail at import."""
+    class Toplevel: pass
+    class Frame: pass
+    class Label: pass
+    class Button: pass
+    class Entry: pass
+    class Text: pass
+    class Canvas: pass
+    class Scale: pass
+    class Checkbutton: pass
+    class Radiobutton: pass
+    class Menu: pass
+    class Listbox: pass
+    class Scrollbar: pass
+    class OptionMenu: pass
+    class StringVar:
+      def __init__(self, *a, **kw): self._v = ''
+      def get(self): return self._v
+      def set(self, v): self._v = v
+      def trace(self, *a, **kw): pass
+    class IntVar(StringVar): pass
+    class BooleanVar(StringVar): pass
+    class DoubleVar(StringVar): pass
+    END = 'end'
+    LEFT = 'left'
+    RIGHT = 'right'
+    TOP = 'top'
+    BOTTOM = 'bottom'
+    BOTH = 'both'
+    X = 'x'
+    Y = 'y'
+    N = 'n'
+    S = 's'
+    E = 'e'
+    W = 'w'
+    NSEW = 'nsew'
+    HORIZONTAL = 'horizontal'
+    VERTICAL = 'vertical'
+    DISABLED = 'disabled'
+    NORMAL = 'normal'
+    WORD = 'word'
+
+  class _TtkStub:
+    class Frame: pass
+    class Label: pass
+    class Button: pass
+    class Entry: pass
+    class Combobox: pass
+    class Spinbox: pass
+    class Progressbar: pass
+    class Notebook: pass
+    class Scale: pass
+    class Checkbutton: pass
+    class Separator: pass
+    class Labelframe: pass
+    class Scrollbar: pass
+    class Style:
+      def configure(self, *a, **kw): pass
+      def map(self, *a, **kw): pass
+      def theme_use(self, *a, **kw): pass
+
+  tk = _TkStub()
+  ttk = _TtkStub()
+  askopenfilename = lambda *a, **kw: None
 import subprocess as sp
 import string
 import re
