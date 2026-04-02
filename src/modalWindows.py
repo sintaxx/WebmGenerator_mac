@@ -3147,3 +3147,352 @@ class FindMatchingSoundsModal(tk.Toplevel):
 if __name__ == "__main__":
   app = FindMatchingSoundsModal()
   app.mainloop()
+
+
+# =============================================================================
+# PySide6 replacements — override the Tkinter classes above when PySide6 is
+# available.  Only the classes that are actually called from the migrated UI
+# are replaced here; the rest remain as Tkinter stubs that will show a "not
+# yet migrated" message if ever invoked.
+# =============================================================================
+
+try:
+    from PySide6.QtWidgets import (
+        QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+        QLabel, QPushButton, QCheckBox, QComboBox, QLineEdit,
+        QDoubleSpinBox, QSpinBox, QScrollArea, QWidget,
+        QFileDialog, QTextEdit, QProgressBar, QDialogButtonBox,
+    )
+    from PySide6.QtCore import Qt, QThread, Signal
+    import subprocess as _sp
+
+    # ------------------------------------------------------------------
+    # Tooltip — already a plain Python class; keep Qt version for compat
+    # ------------------------------------------------------------------
+    class Tooltip:
+        """No-op: Qt uses setToolTip() directly."""
+        def __init__(self, widget=None, text=''):
+            if widget is not None and hasattr(widget, 'setToolTip'):
+                widget.setToolTip(text)
+
+    # ------------------------------------------------------------------
+    # AdvancedDropModal
+    # ------------------------------------------------------------------
+    class AdvancedDropModal(QDialog):
+
+        def __init__(self, master=None, dataDestination=None, *args):
+            super().__init__(master)
+            self.setWindowTitle('Advanced drop file filtering')
+            self.setMinimumWidth(500)
+            self.data = dataDestination or {}
+
+            layout = QGridLayout(self)
+
+            layout.addWidget(QLabel('Sort loaded files by'), 0, 0)
+            self.comboSort = QComboBox()
+            self.comboSort.addItems([
+                'None',
+                'Filename ascending', 'Filename descending',
+                'Path ascending', 'Path descending',
+                'File Size ascending', 'File Size descending',
+                'Created date ascending', 'Created date descending',
+                'Modified date ascending', 'Modified date descending',
+                'Access date ascending', 'Access date descending',
+            ])
+            layout.addWidget(self.comboSort, 0, 1)
+
+            layout.addWidget(QLabel('File name filter'), 1, 0)
+            self.entryFilter = QLineEdit()
+            layout.addWidget(self.entryFilter, 1, 1)
+
+            btn = QPushButton('Apply')
+            btn.clicked.connect(self._applyOptions)
+            layout.addWidget(btn, 2, 0, 1, 2)
+
+        def _applyOptions(self):
+            self.data['sort'] = self.comboSort.currentText()
+            self.data['filter'] = self.entryFilter.text()
+            self.accept()
+
+    # ------------------------------------------------------------------
+    # AdvancedEncodeFlagsModal
+    # ------------------------------------------------------------------
+    class AdvancedEncodeFlagsModal(QDialog):
+
+        def __init__(self, master=None, controller=None, *args):
+            super().__init__(master)
+            self.setWindowTitle('Advanced Encoding Flags')
+            self.setMinimumWidth(620)
+            self.controller = controller
+
+            options = {
+                'forceBestDeadline': False,
+                'disableVP9Tiling': False,
+                'forceGifFPS': True,
+                'forceFPS': -1,
+                'earlyPSNRWidthReduction': -1,
+                'earlyPSNRWindowLength': 5,
+                'earlyPSNRSkipSamples': 5,
+                'cqMode': False,
+                'qmaxOverride': -1,
+                'svtav1Preset': 8,
+                'bitRateControl': 'Average',
+            }
+            if controller is not None:
+                tempOptions = controller.getAdvancedFlags()
+                for k, v in options.items():
+                    if k in tempOptions:
+                        try:
+                            options[k] = type(v)(tempOptions[k])
+                        except Exception:
+                            pass
+                for k in tempOptions:
+                    if k.startswith('encoder-option-'):
+                        options[k] = str(tempOptions[k])
+
+            layout = QGridLayout(self)
+            row = 0
+
+            def _addCheck(label, key, val):
+                nonlocal row
+                layout.addWidget(QLabel(label), row, 0)
+                cb = QCheckBox()
+                cb.setChecked(bool(val))
+                layout.addWidget(cb, row, 1)
+                row += 1
+                return cb
+
+            def _addSpin(label, key, val, minv=-1, maxv=10000):
+                nonlocal row
+                layout.addWidget(QLabel(label), row, 0)
+                sp = QDoubleSpinBox()
+                sp.setRange(minv, maxv)
+                sp.setValue(float(val))
+                layout.addWidget(sp, row, 1)
+                row += 1
+                return sp
+
+            def _addCombo(label, key, val, choices):
+                nonlocal row
+                layout.addWidget(QLabel(label), row, 0)
+                cb = QComboBox()
+                cb.addItems(choices)
+                cb.setCurrentText(str(val))
+                layout.addWidget(cb, row, 1)
+                row += 1
+                return cb
+
+            self.wForceBest = _addCheck('Force "best" deadline', 'forceBestDeadline', options['forceBestDeadline'])
+            self.wDisableTiling = _addCheck('Disable VP9 column tiling', 'disableVP9Tiling', options['disableVP9Tiling'])
+            self.wForceGifFPS = _addCheck('Force 18fps on GIFs', 'forceGifFPS', options['forceGifFPS'])
+            self.wForceFPS = _addSpin('Force fixed FPS (-1 = disable)', 'forceFPS', options['forceFPS'])
+            self.wEarlyPSNR = _addCheck('Use running average PSNR', 'earlyPSNRWidthReduction', options['earlyPSNRWidthReduction'] != -1)
+            self.wPSNRWindow = _addSpin('PSNR samples to average', 'earlyPSNRWindowLength', options['earlyPSNRWindowLength'], 1, 100)
+            self.wPSNRSkip = _addSpin('Initial PSNR samples to skip', 'earlyPSNRSkipSamples', options['earlyPSNRSkipSamples'], 1, 100)
+            self.wCQMode = _addCheck('Constant Quality Mode', 'cqMode', options['cqMode'])
+            self.wQmax = _addSpin('Qmax override (-1 = disable)', 'qmaxOverride', options['qmaxOverride'], -1, 100)
+            self.wSVT = _addSpin('SVT-AV1 Preset', 'svtav1Preset', options['svtav1Preset'], 0, 12)
+            self.wBRControl = _addCombo('Bitrate constraint mode', 'bitRateControl', options['bitRateControl'],
+                                        ['Average', 'Limit Maximum', 'Constant'])
+
+            # Custom encoder params
+            self.specWidgets = {}
+            if controller is not None:
+                spec = controller.customEncoderspecs.get(getattr(controller, 'outputFormatValue', ''))
+                if spec is not None:
+                    for param in spec.getExtraEncoderParams():
+                        if param['type'] == 'choice':
+                            w = _addCombo(param['label'], param['name'],
+                                          options.get('encoder-option-' + param['name'], param.get('default', '')),
+                                          param.get('options', []))
+                            self.specWidgets[param['name']] = ('combo', w)
+                        elif param['type'] == 'int':
+                            w = _addSpin(param['label'], param['name'],
+                                         int(options.get('encoder-option-' + param['name'], param.get('default', 0))),
+                                         0, 10000)
+                            self.specWidgets[param['name']] = ('spin', w)
+
+            applyBtn = QPushButton('Apply')
+            applyBtn.clicked.connect(self._applyOptions)
+            layout.addWidget(applyBtn, row, 0, 1, 2)
+
+        def _applyOptions(self):
+            options = {
+                'forceBestDeadline': self.wForceBest.isChecked(),
+                'disableVP9Tiling': self.wDisableTiling.isChecked(),
+                'forceGifFPS': self.wForceGifFPS.isChecked(),
+                'forceFPS': int(self.wForceFPS.value()),
+                'earlyPSNRWidthReduction': -1 if not self.wEarlyPSNR.isChecked() else int(self.wPSNRWindow.value()),
+                'earlyPSNRWindowLength': int(self.wPSNRWindow.value()),
+                'earlyPSNRSkipSamples': int(self.wPSNRSkip.value()),
+                'cqMode': self.wCQMode.isChecked(),
+                'qmaxOverride': int(self.wQmax.value()),
+                'svtav1Preset': int(self.wSVT.value()),
+                'bitRateControl': self.wBRControl.currentText(),
+            }
+            for name, (kind, w) in self.specWidgets.items():
+                options['encoder-option-' + name] = w.currentText() if kind == 'combo' else str(int(w.value()))
+            if self.controller is not None:
+                self.controller.setAdvancedFlags(options)
+            self.accept()
+
+    # ------------------------------------------------------------------
+    # OptionsDialog
+    # ------------------------------------------------------------------
+    class OptionsDialog(QDialog):
+
+        def __init__(self, master=None, optionsDict=None, changedProperties=None,
+                     changeCallback=None, *args):
+            super().__init__(master)
+            self.setWindowTitle('Options')
+            self.setMinimumSize(620, 200)
+            self.optionsDict = optionsDict or {}
+            self.changedProperties = changedProperties if changedProperties is not None else {}
+            self.changeCallback = changeCallback
+            self.varMap = {}
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            inner = QWidget()
+            grid = QGridLayout(inner)
+            scroll.setWidget(inner)
+
+            COLUMN_HEIGHT = 25
+            for i, (k, v) in enumerate(self.optionsDict.items()):
+                col = (i // COLUMN_HEIGHT) * 2
+                r = i % COLUMN_HEIGHT
+                grid.addWidget(QLabel(k), r, col)
+                if isinstance(v, bool):
+                    w = QCheckBox()
+                    w.setChecked(v)
+                    w.stateChanged.connect(lambda state, key=k, cb=w: self._valueChanged(key, cb.isChecked()))
+                    grid.addWidget(w, r, col + 1)
+                else:
+                    w = QLineEdit(str(v))
+                    w.textChanged.connect(lambda text, key=k, t=type(v): self._valueChanged(key, text, t))
+                    grid.addWidget(w, r, col + 1)
+                self.varMap[k] = w
+
+            mainLayout = QVBoxLayout(self)
+            mainLayout.addWidget(scroll)
+            saveBtn = QPushButton('Save Changes')
+            saveBtn.clicked.connect(self._saveChanges)
+            mainLayout.addWidget(saveBtn)
+
+        def _valueChanged(self, key, value, cast=None):
+            try:
+                self.changedProperties[key] = cast(value) if cast else value
+            except Exception:
+                self.changedProperties.pop(key, None)
+
+        def _saveChanges(self):
+            if self.changeCallback is not None:
+                self.changeCallback(self.changedProperties)
+            self.accept()
+
+    # ------------------------------------------------------------------
+    # SubtitleExtractionModal
+    # ------------------------------------------------------------------
+    class SubtitleExtractionModal(QDialog):
+
+        def __init__(self, parent=None, *args):
+            super().__init__(parent)
+            self.setWindowTitle('Extract Subtitles')
+            self.setMinimumSize(600, 200)
+            self.file = ''
+
+            layout = QGridLayout(self)
+
+            layout.addWidget(QLabel('Source file'), 0, 0)
+            self.btnFile = QPushButton('File: None')
+            self.btnFile.clicked.connect(self._selectFile)
+            layout.addWidget(self.btnFile, 0, 1)
+
+            layout.addWidget(QLabel('Output path'), 1, 0)
+            self.btnOutput = QPushButton('Path: None')
+            self.btnOutput.clicked.connect(self._selectOutput)
+            self.outputPath = ''
+            layout.addWidget(self.btnOutput, 1, 1)
+
+            layout.addWidget(QLabel('Stream index'), 2, 0)
+            self.spinStream = QSpinBox()
+            self.spinStream.setRange(0, 99)
+            layout.addWidget(self.spinStream, 2, 1)
+
+            self.progress = QProgressBar()
+            layout.addWidget(self.progress, 3, 0, 1, 2)
+
+            self.logView = QTextEdit()
+            self.logView.setReadOnly(True)
+            layout.addWidget(self.logView, 4, 0, 1, 2)
+
+            self.btnExtract = QPushButton('Extract')
+            self.btnExtract.clicked.connect(self._extract)
+            layout.addWidget(self.btnExtract, 5, 0, 1, 2)
+
+        def _selectFile(self):
+            fn, _ = QFileDialog.getOpenFileName(self, 'Select video file', '', 'Video files (*.mkv *.mp4 *.avi *.webm);;All files (*.*)')
+            if fn:
+                self.file = fn
+                self.btnFile.setText('File: ' + fn[-40:])
+
+        def _selectOutput(self):
+            fn, _ = QFileDialog.getSaveFileName(self, 'Output subtitle file', '', 'Subtitle files (*.srt *.ass *.vtt);;All files (*.*)')
+            if fn:
+                self.outputPath = fn
+                self.btnOutput.setText('Path: ' + fn[-40:])
+
+        def _extract(self):
+            if not self.file or not self.outputPath:
+                return
+            cmd = ['ffmpeg', '-y', '-i', self.file,
+                   '-map', '0:s:{}'.format(self.spinStream.value()),
+                   self.outputPath]
+            self.logView.append('Running: ' + ' '.join(cmd))
+            try:
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=300)
+                self.logView.append(result.stdout)
+                self.logView.append(result.stderr)
+            except Exception as e:
+                self.logView.append(str(e))
+
+    # ------------------------------------------------------------------
+    # VideoAudioSync — minimal stub (full 1297-line rewrite deferred)
+    # ------------------------------------------------------------------
+    class VideoAudioSync(QWidget):
+
+        def __init__(self, uiParent=None, master=None, controller=None,
+                     sequencedClips=None, dubFile=None, dubOffsetVar=None,
+                     fadeVar=None, globalOptions=None, mixVar=None):
+            super().__init__(uiParent)
+            self.isActive = True
+            self.valuesChanged = False
+            self.keepWidth = False
+            self.controller = controller
+            self.sequencedClips = sequencedClips or []
+
+            layout = QVBoxLayout(self)
+            layout.addWidget(QLabel('Sequence timing preview — full planner coming in a future update.'))
+            layout.addWidget(QLabel('{} clips in sequence'.format(len(self.sequencedClips))))
+            closeBtn = QPushButton('Close')
+            closeBtn.clicked.connect(self._close)
+            layout.addWidget(closeBtn)
+
+        def recalculateEDLTimings(self, rid=None, pos=None):
+            pass
+
+        def toggleBoringMode(self, boringMode):
+            pass
+
+        def cleanup(self):
+            self.isActive = False
+
+        def _close(self):
+            self.isActive = False
+            parent = self.parent()
+            if parent and hasattr(parent, 'close'):
+                parent.close()
+
+except ImportError:
+    pass  # PySide6 not available; Tkinter classes defined above remain in effect
+

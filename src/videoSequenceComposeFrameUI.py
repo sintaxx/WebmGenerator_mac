@@ -1,23 +1,25 @@
+"""
+VideoSequenceComposeFrameUI — PySide6 stub (Phase 5).
+This class was unused in the original codebase; tkinter references removed.
+"""
 
-import tkinter as tk
-import tkinter.ttk as ttk
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QPainter, QColor
 
 
+class VideoSequenceComposeFrameUI(QWidget):
 
-class VideoSequenceComposeFrameUI(ttk.Frame):
+    def __init__(self, parent=None, controller=None, globalOptions=None, *args, **kwargs):
+        super().__init__(parent)
+        self.controller = controller
+        self.globalOptions = globalOptions or {}
+        self.uiDirty = True
+        self.setMinimumSize(200, 200)
 
-  def __init__(self, master, controller, globalOptions={}, *args, **kwargs):
-    ttk.Frame.__init__(self, master)
-    self.controller = controller
-    self.globalOptions=globalOptions
-
-    self.compose_canvas = tk.Canvas(self,width=200, height=200, bg='#1E1E1E',borderwidth=0,border=0,relief='flat',highlightthickness=0)
-    self.compose_canvas.grid(row=1,column=0,sticky="nesw")
-    self.grid_rowconfigure(1, weight=1)
-    self.grid_columnconfigure(0, weight=1)
-
-    self.uiDirty=True
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor('#1E1E1E'))
 
 
 if __name__ == '__main__':
-  import webmGenerator
+    import webmGenerator
