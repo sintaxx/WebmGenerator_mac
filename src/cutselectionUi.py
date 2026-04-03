@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QComboBox, QProgressBar,
     QFrame, QSplitter, QCheckBox,
 )
-from PySide6.QtCore import Qt, QTimer, QMimeData, QUrl, QByteArray
+from PySide6.QtCore import Qt, QTimer, QMimeData, QUrl, QByteArray, QThread
 from PySide6.QtGui import QPixmap, QImage, QDrag
 
 
@@ -438,6 +438,11 @@ class CutselectionUi(QWidget):
         responseImage may be a numpy array (H×W×3 uint8) or raw PGM bytes.
         requestId is the filepath of the file being previewed.
         """
+        # Called from background preview worker threads — must be on main thread
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda: self.updateViewPreviewFrame(requestId, responseImage))
+            return
+
         if responseImage is None:
             return
 
@@ -502,6 +507,10 @@ class CutselectionUi(QWidget):
 
     def setUiDirtyFlag(self, specificRID=None, withLock=False):
         """Signal the timeline that its data has changed and it should repaint."""
+        # May be called from background ffmpegService callback threads
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda r=specificRID: self.setUiDirtyFlag(r))
+            return
         if hasattr(self.frameTimeLineFrame, 'setDirty'):
             self.frameTimeLineFrame.setDirty(specificRID)
 

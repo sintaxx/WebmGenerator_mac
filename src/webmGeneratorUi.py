@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QMessageBox, QApplication
 )
 from PySide6.QtGui import QAction, QPixmap, QImage, QIcon, QKeySequence
-from PySide6.QtCore import Qt, QTimer, Signal, QMimeData, QUrl
+from PySide6.QtCore import Qt, QTimer, Signal, QMimeData, QUrl, QThread
 
 import webbrowser
 import sys
@@ -855,6 +855,12 @@ class WebmGeneratorUi:
     # === Status bar updates ===
 
     def updateGlobalStatus(self, message, percentage, progressPreview=None):
+        # This is called from background ffmpegService/ytdl threads — must marshal to main thread
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda m=message, p=percentage, pp=progressPreview:
+                              self.updateGlobalStatus(m, p, pp))
+            return
+
         if progressPreview is not None and self.showStreamPreviews:
             self.controller.cutselectionUi.updateProgressPreview(progressPreview)
         elif message is not None and 'streaming' not in message:
