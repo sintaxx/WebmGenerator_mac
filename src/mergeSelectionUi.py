@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QApplication, QFrame, QGroupBox, QFileDialog, QMessageBox,
     QSpinBox,
 )
-from PySide6.QtCore import Qt, QTimer, QMimeData, QUrl
+from PySide6.QtCore import Qt, QTimer, QMimeData, QUrl, QThread
 from PySide6.QtGui import QPixmap, QDrag, QColor
 
 try:
@@ -280,6 +280,18 @@ class EncodeProgress(QFrame):
                      encodeStage=None, pix_fmt=None, encodePass=None, lastEncodedBR=None,
                      lastEncodedCRF=None, lastEncodedSize=None, lastEncodedPSNR=None,
                      lastBuff=None, lastWR=None, currentSize=None):
+
+        # Called from ffmpegService background encode threads — must run on main thread
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda: self.updateStatus(
+                status, percent, finalFilename=finalFilename,
+                requestStatus=requestStatus, encodeStage=encodeStage,
+                pix_fmt=pix_fmt, encodePass=encodePass,
+                lastEncodedBR=lastEncodedBR, lastEncodedCRF=lastEncodedCRF,
+                lastEncodedSize=lastEncodedSize, lastEncodedPSNR=lastEncodedPSNR,
+                lastBuff=lastBuff, lastWR=lastWR, currentSize=currentSize,
+            ))
+            return
 
         if self.cancelled:
             return
