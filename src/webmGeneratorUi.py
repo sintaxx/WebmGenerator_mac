@@ -238,6 +238,12 @@ class WebmGeneratorUi:
         self.dropAbort = None
         self.showStreamPreviews = False
 
+        # Show the window — PySide6 windows must be shown explicitly
+        # (Tkinter's Tk() root showed itself on creation automatically)
+        self.mainWindow.show()
+        self.mainWindow.raise_()
+        self.mainWindow.activateWindow()
+
     def _buildMenuBar(self):
         """Build the menu bar with all menus."""
         menubar = self.mainWindow.menuBar()

@@ -152,8 +152,8 @@ class WebmGeneratorController:
       'mp4NvencPresetParam':'hq',
       'mp4Libx264TuneParam':'slower',
 
-      "cutsTabPlayerBackgroundColour":"#282828",
-      "filtersTabPlayerBackgroundColour":"#282828",
+      "cutsTabPlayerBackgroundColour":"color",
+      "filtersTabPlayerBackgroundColour":"color",
       "autoLoadLastAutosave":False,
       "deleteDownloadsAtExit":False,
       "embedSequencePlanner":True,
