@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QSizePolicy, QMenu, QMessageBox,
     QApplication, QGroupBox,
 )
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer, QPoint, QThread
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QCursor
 
 try:
@@ -1272,6 +1272,10 @@ class FilterSelectionUi(QWidget):
         self.filterFailedResetTimer = None
 
     def updateSeekPositionThousands(self, value, seconds):
+        """Called from filterSelectionController mpv time-pos callback (mpv event thread)."""
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda v=value, s=seconds: self.updateSeekPositionThousands(v, s))
+            return
         if self.controller is None:
             return
         duration = self.controller.getClipDuration()
@@ -1280,6 +1284,10 @@ class FilterSelectionUi(QWidget):
             self.canvasValueTimeline.setSeekX(tx)
 
     def updateSeekLabel(self, value):
+        """Called from filterSelectionController mpv time-pos callback (mpv event thread)."""
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda v=value: self.updateSeekLabel(v))
+            return
         self.volumeLabel.setText('{:.2f}s'.format(value))
 
     def setActiveTimeLineValue(self, activeValuePair):

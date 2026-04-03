@@ -495,7 +495,10 @@ class CutselectionUi(QWidget):
     # ------------------------------------------------------------------
 
     def setPausedStatus(self, value):
-        """Called from controller when mpv pause state changes."""
+        """Called from controller when mpv pause state changes (mpv event thread)."""
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda v=value: self.setPausedStatus(v))
+            return
         self._paused = bool(value)
         self.btnPlayPause.setText('Play' if self._paused else 'Pause')
 
@@ -515,7 +518,10 @@ class CutselectionUi(QWidget):
             self.frameTimeLineFrame.setDirty(specificRID)
 
     def handleMpvFPSChange(self, value):
-        """Called when mpv reports a new FPS value."""
+        """Called when mpv reports a new FPS value (mpv event thread)."""
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda v=value: self.handleMpvFPSChange(v))
+            return
         if hasattr(self.frameTimeLineFrame, 'setFrameRate'):
             self.frameTimeLineFrame.setFrameRate(value)
 
@@ -529,6 +535,11 @@ class CutselectionUi(QWidget):
     # ------------------------------------------------------------------
 
     def updateSummary(self, filename, duration=None, videoParams=None, fps=None, estimatedFps=None):
+        """Called from controller mpv duration/property callbacks (mpv event thread)."""
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda fn=filename, d=duration, vp=videoParams, f=fps, ef=estimatedFps:
+                              self.updateSummary(fn, d, vp, f, ef))
+            return
         if filename is None:
             self.summaryLabel.setText('')
             return
