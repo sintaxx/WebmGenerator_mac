@@ -12,7 +12,7 @@ try:
     os.chdir(os.path.abspath(os.path.realpath(os.path.dirname(sys.executable))))
   else:
     os.chdir(os.path.abspath(os.path.realpath(os.path.dirname(__file__))))
-  
+
   print("Current working directory", os.getcwd())
 
   logging.basicConfig(
@@ -22,21 +22,25 @@ try:
             logging.FileHandler("debug.log"),
             logging.StreamHandler()
         ]
-  )  
+  )
 
   logging.info('Startup.')
 
+  from PySide6.QtWidgets import QApplication
+  from PySide6.QtCore import Qt
+
+  app = QApplication(sys.argv)
+  app.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
+
   from src.webmGeneratorController import WebmGeneratorController
-  
+
   initialFiles = sys.argv[1:]
   webmGenerator = WebmGeneratorController(initialFiles)
-  webmGenerator()
 
-  del webmGenerator
+  sys.exit(app.exec())
+
 except Exception as e:
   logging.error('Startup Exception',exc_info=e)
   logging.error(traceback.format_exc())
 
 logging.info('DONE')
-sys.exit()
-os.kill()

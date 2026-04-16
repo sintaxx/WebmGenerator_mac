@@ -44,12 +44,12 @@ class FilterSelectionController:
 
 
     try:
-        self.player.background=self.globalOptions.get('filtersTabPlayerBackgroundColour','#282828')
+        self.player.background=self.globalOptions.get('filtersTabPlayerBackgroundColour','color')
     except:
         pass
 
     try:
-        self.player.background_color=self.globalOptions.get('filtersTabPlayerBackgroundColour','#282828')
+        self.player.background_color=self.globalOptions.get('filtersTabPlayerBackgroundColour','color')
     except:
         pass
 

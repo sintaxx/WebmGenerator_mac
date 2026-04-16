@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+autosave.webgproj
+configuration.json
+recentlyPlayed.pl
+recentProjects.pl
+debug.log
+tempVideoFiles/
+tempDownloadedVideoFiles/
+.DS_Store
+dist/
+build/
+*.egg-info/

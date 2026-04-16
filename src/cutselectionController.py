@@ -315,12 +315,12 @@ class CutselectionController:
       self.player.subtitles=False
 
     try:
-        self.player.background=self.globalOptions.get('cutsTabPlayerBackgroundColour','#282828')
+        self.player.background=self.globalOptions.get('cutsTabPlayerBackgroundColour','color')
     except:
         pass
 
     try:
-        self.player.background_color=self.globalOptions.get('cutsTabPlayerBackgroundColour','#282828')
+        self.player.background_color=self.globalOptions.get('cutsTabPlayerBackgroundColour','color')
     except:
         pass
 

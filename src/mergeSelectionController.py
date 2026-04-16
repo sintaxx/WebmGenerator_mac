@@ -135,6 +135,12 @@ class MergeSelectionController:
   def getProfiles(self):
     return self.stdProfileSpecs + self.customProfileSpecs
 
+  def getAvailableOutputFormats(self):
+    return self.ffmpegService.getAvailableOutputFormats()
+
+  def resolveOutputFormat(self,outputFormat):
+    return self.ffmpegService.resolveOutputFormat(outputFormat)
+
   def close_ui(self):
     try:
       self.ui.close_ui()

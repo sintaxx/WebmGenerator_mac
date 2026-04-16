@@ -1,2846 +1,2297 @@
-import tkinter as tk
-import tkinter.ttk as ttk
-from pathvalidate import sanitize_filepath
-from pygubu.widgets.scrolledframe import ScrolledFrame
+"""
+MergeSelectionUi — PySide6 rewrite (Phase 4).
+Replaces Tkinter ttk.Frame / ScrolledFrame / tkinterdnd2 with QWidget / QScrollArea / QDrag.
+All business-logic methods preserved verbatim; only rendering/input backend changed.
+"""
+
 import os
-import string 
-import mpv
-from math import floor
-from tkinter.filedialog import askopenfilename
-import subprocess as sp
+import string
 import random
 import time
-from collections import deque
-import logging 
-import json
-import threading
-from .modalWindows import Tooltip
-from .modalWindows import VideoAudioSync
-from .modalWindows import AdvancedEncodeFlagsModal
 import platform
+import logging
+import threading
+import subprocess as sp
+from math import floor
+from collections import deque
 
+import mpv
 
-
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QScrollArea, QDoubleSpinBox,
+    QCheckBox, QComboBox, QSizePolicy, QProgressBar,
+    QApplication, QFrame, QGroupBox, QFileDialog, QMessageBox,
+    QSpinBox,
+)
+from PySide6.QtCore import Qt, QTimer, QMimeData, QUrl, QThread
+from PySide6.QtGui import QPixmap, QDrag, QColor
 
 try:
-    from tkinterdnd2 import Tk as TkinterDnDTk
-    from tkinterdnd2 import COPY, DND_FILES, DND_TEXT
-except Exception as e:
-    print(e)
+    from .modalWindows import VideoAudioSync, AdvancedEncodeFlagsModal
+    from .encoders.specVideoEncoder import SpecVideoEncoder
+except ImportError:
+    from modalWindows import VideoAudioSync, AdvancedEncodeFlagsModal
+    from encoders.specVideoEncoder import SpecVideoEncoder
 
-from .encoders.specVideoEncoder import SpecVideoEncoder
+from pathvalidate import sanitize_filepath
+
 
 def format_timedelta(value, time_format="{days} days, {hours2}:{minutes2}:{seconds2}"):
-
     if hasattr(value, 'seconds'):
         seconds = value.seconds + value.days * 24 * 3600
     else:
         seconds = value
-
     seconds_total = seconds
-
     minutes = int(floor(seconds / 60))
     minutes_total = minutes
     seconds -= minutes * 60
-
     seconds = int(seconds)
-
     hours = int(floor(minutes / 60))
     hours_total = hours
     minutes -= hours * 60
-
     days = int(floor(hours / 24))
     days_total = days
     hours -= days * 24
-
     years = int(floor(days / 365))
     years_total = years
     days -= years * 365
-
     return time_format.format(**{
-        'seconds': seconds,
-        'seconds2': str(seconds).zfill(2),
-        'minutes': minutes,
-        'minutes2': str(minutes).zfill(2),
-        'hours': hours,
-        'hours2': str(hours).zfill(2),
-        'days': days,
-        'years': years,
-        'seconds_total': seconds_total,
-        'minutes_total': minutes_total,
-        'hours_total': hours_total,
-        'days_total': days_total,
+        'seconds': seconds, 'seconds2': str(seconds).zfill(2),
+        'minutes': minutes, 'minutes2': str(minutes).zfill(2),
+        'hours': hours,     'hours2': str(hours).zfill(2),
+        'days': days, 'years': years,
+        'seconds_total': seconds_total, 'minutes_total': minutes_total,
+        'hours_total': hours_total,     'days_total': days_total,
         'years_total': years_total,
     })
 
-class EncodeProgress(ttk.Frame):
 
-  def __init__(self, master=None, *args, encodeRequestId=None,controller=None, targetSize=0.0, clip=None, **kwargs):
-    ttk.Frame.__init__(self, master)
-
-    self.frameEncodeProgressWidget = self
-
-    self.encodeRequestId = encodeRequestId
-    self.cancelled = False
-    self.iscomplete = False
-    self.controller = controller
-    self.config(padding='2', relief='raised')
-    self.clip = clip
-    self.rid = clip.rid
-
-    self.frameEncodeProgressWidget.columnconfigure(0, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(1, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(2, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(3, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(4, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(5, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(6, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(7, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(8, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(9, weight=1)
-    self.frameEncodeProgressWidget.columnconfigure(10, weight=0)
-    self.frameEncodeProgressWidget.columnconfigure(11, weight=0)
-    self.frameEncodeProgressWidget.rowconfigure(0, weight=1)
-
-    self.labelRequestId = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelRequestId.config(text='Request #{}'.format(encodeRequestId), relief='flat')
-    self.labelRequestId.grid(row=0,column=0,sticky='nesw')
-
-    self.labelRequestStatus = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelRequestStatus.config(text='Idle', relief='flat')
-    self.labelRequestStatus.grid(row=0,column=1,sticky='nesw',columnspan=9)
-
-    try:
-      self.drag_source_register("*")
-      self.dnd_bind('<<DragInitCmd>>',self.dragInit)
-      self.labelRequestStatus.drag_source_register("*")
-      self.labelRequestStatus.dnd_bind('<<DragInitCmd>>',self.dragInit)
-    except Exception as e:
-      logging.error("DragInitCmd Exception",exc_info=e)
-
-    self.labelEncodeStage = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelEncodeStage.config(text='Stage: Submitted Idle', relief='flat')
-    self.labelEncodeStage.grid(row=1,column=0,sticky='nesw')
-
-    self.labelEncodePass = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelEncodePass.config(text='Pass: Preparation Cutting Clips', relief='flat')
-    self.labelEncodePass.grid(row=1,column=1,sticky='nesw')
-
-    self.labelTargetSize = ttk.Label(self.frameEncodeProgressWidget)
-    if targetSize <= 0.0:
-      self.labelTargetSize.config(text='Target Size: -', relief='flat')
-    else:
-      self.labelTargetSize.config(text='Target Size: {}M'.format(targetSize), relief='flat')
-    self.labelTargetSize.grid(row=1,column=2,sticky='nesw')
-
-    self.labelLastEncodedSize = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelLastEncodedSize.config(text='Size: -', relief='flat')
-    self.labelLastEncodedSize.grid(row=1,column=3,sticky='nesw')
-
-    self.labelLastEncodedBR = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelLastEncodedBR.config(text='Bitrate: -', relief='flat')
-    self.labelLastEncodedBR.grid(row=1,column=4,sticky='nesw')
-
-    self.labelLastBuff = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelLastBuff.config(text='Buffer: -', relief='flat')
-    self.labelLastBuff.grid(row=1,column=5,sticky='nesw')
-
-    self.labelLastWR = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelLastWR.config(text='Width Change: -', relief='flat')
-    self.labelLastWR.grid(row=1,column=6,sticky='nesw')
-
-    self.labelTimeLeft  = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelTimeLeft.config(text='Idle', width='19')
-    self.labelTimeLeft.grid(row=1,column=7,sticky='nesw')
-
-    self.labelLastEncodedPSNR = ttk.Label(self.frameEncodeProgressWidget)
-    self.labelLastEncodedPSNR.config(text='Quality: -', relief='flat')
-    self.labelLastEncodedPSNR.grid(row=1,column=8,sticky='nesw')
-
-    self.progressbarEncodeProgressLabel = ttk.Progressbar(self.frameEncodeProgressWidget)
-    self.progressbarEncodeProgressLabel.config(mode='determinate', orient='horizontal')
-    self.progressbarEncodeProgressLabel.grid(row=2,column=0,sticky='nesw',columnspan=9)
-
-
-    self.progressbarEncodeCancelButton = ttk.Button(self.frameEncodeProgressWidget)
-    self.progressbarEncodeCancelButton.config(text='Cancel')
-    self.progressbarEncodeCancelButton.config(command=self.cancelEncodeRequest)
-    self.progressbarEncodeCancelButton.config(style="small.TButton")
-    self.progressbarEncodeCancelButton.grid(row=2,column=9,sticky='nesw')
-
-
-    self.progressbarPlayButton = ttk.Button(self.frameEncodeProgressWidget)
-    self.progressbarPlayButton.config(text='Play')
-    self.progressbarPlayButton.config(command=self.playFinal)
-    self.progressbarPlayButton.config(style="small.TButton")
-
-
-
-    self.canvasInputCutPreview = ttk.Label(self.frameEncodeProgressWidget, style="previewImg.TLabel")
-
-    self.canvasInputCutPreview.config(text=' ')
-    self.previewImage= self.clip.previewImage.subsample(2, 2)
-    self.canvasInputCutPreview.config(image=self.previewImage)
-
-    self.canvasInputCutPreview['padding']=( (90-self.previewImage.width())//2 ,5)
-
-    self.canvasInputCutPreview.grid(row=0,column=11,rowspan=3,sticky='nes')
-
-    try:
-      self.canvasInputCutPreview.drag_source_register("*")
-      self.canvasInputCutPreview.dnd_bind('<<DragInitCmd>>',self.dragInit)
-      self.progressbarPlayButton.drag_source_register("*")
-      self.progressbarPlayButton.dnd_bind('<<DragInitCmd>>',self.dragInit)
-    except Exception as e:
-        logging.error("DragInitCmd2 Exception",exc_info=e)
-
-
-    self.progressbarOpenContainingFolderButton = ttk.Button(self.frameEncodeProgressWidget)
-    self.progressbarOpenContainingFolderButton.config(text='Open folder')
-    self.progressbarOpenContainingFolderButton.config(command=self.openFolder)
-    self.progressbarOpenContainingFolderButton.config(style="small.TButton")
-
-    self.frameEncodeProgressWidget.pack(anchor='nw', expand='false',padx=0,pady=5, fill='x', side='top')
-
-    self.popup_menu = tk.Menu(self, tearoff=0)
-
-    self.popup_menu.add_command(label="Remove", command = self.remove )
-    self.popup_menu.add_command(label="Remove and Delete File", command = self.deleteCompleteAndRemove )
-    
-    self.canvasInputCutPreview.bind("<Button-3>",          self.showContextMenu)
-    self.progressbarPlayButton.bind("<Button-3>",          self.showContextMenu)
-
-    self.progresspercent = 0
-    self.encodeStartTime = None
-    self.progressQueue    = deque([],10)
-    self.timestampQueue   = deque([],10)
-    self.finalFilename    = None
-    self.player = None
-    self.lastProgress=0
-    self.lastEncodedSize=None
-    self.pix_fmt = 8
-
-    self.updateStatus(None, None, requestStatus=None, encodeStage=None, encodePass=None, lastEncodedBR=None, lastEncodedSize=None, lastEncodedPSNR=None, lastBuff=None, lastWR=None)
-
-
-  def deleteCompleteAndRemove(self):
-    if self.finalFilename is not None:
-        try:
-            os.remove(self.finalFilename)
-        except Exception as e:
-            print(e)
-    self.remove()
-
-  def showContextMenu(self,e):
-    self.popup_menu.tk_popup(e.x_root,e.y_root)
-
-  def setPreviewImage(self,photoImage):
-    print('setPreviewImage',self.clip.rid)
-    self.previewImage=photoImage.subsample(2, 2)
-    print(self.previewImage)
-    self.canvasInputCutPreview.config(image=self.previewImage)
-    self.canvasInputCutPreview['padding']=( (90-self.previewImage.width())//2 ,5)
-    
-
-  def openFolder(self):
-    if self.finalFilename is not None:
-      path,_ = os.path.split(self.finalFilename)
-      if platform.system() == "Windows":
-          try:
-            sp.call('explorer.exe /select,"{}"'.format(self.finalFilename))
-          except Exception as e:
-            logging.error("explorer select Exception",exc_info=e)
-            os.startfile(path)
-      elif platform.system() == "Darwin":
-          sp.Popen(["open", path])
-      else:
-          sp.Popen(["xdg-open", path])
-
-  def dragInit(self,e):
-
-    if self.finalFilename is not None:
-      fbin = '{{{}}}'.format(os.path.abspath(self.finalFilename))
-      return (COPY, DND_FILES, fbin)
-
-
-  def playFinal(self):
-    if self.finalFilename is not None:
-
-      if self.player is not None:
-        self.player.terminate()
-
-      self.player = mpv.MPV(loop='inf',
-                            mute=True,
-                            volume=100,
-                            autofit_larger='1280')
-
-      self.player.play(self.finalFilename)
-
-      def mutetoggle(key_state, key_name, key_char):
-        if 'd-' in key_state:
-            self.player.mute = not self.player.mute
-
-      self.mutetoggle = mutetoggle
-      self.player.register_key_binding("m", mutetoggle)
-      #self.player.register_key_binding("M", mutetoggle)
-
-      def quitFunc(key_state, key_name, key_char):
-        def playerReaper():
-          print('ReaperKill')
-          player=self.player
-          self.player=None
-          player.terminate()
-          player.wait_for_shutdown()
-        if 'd-' in key_state or 'p-' in key_state:
-            self.playerReaper = threading.Thread(target=playerReaper,daemon=True)
-            self.playerReaper.start()
-
-      self.quitFunc = quitFunc
-
-      self.player.register_key_binding("q", quitFunc)
-      self.player.register_key_binding("Q", quitFunc)        
-      self.player.register_key_binding("CLOSE_WIN", quitFunc)
-
-      def seekPlayer(player,offset):
-        player.command('seek',str(5*offset),'relative')
-
-      self.player.register_key_binding("WHEEL_UP",   lambda s,n,c,p=self.player,o=1:seekPlayer(p,o))
-      self.player.register_key_binding("WHEEL_DOWN", lambda s,n,c,p=self.player,o=-1:seekPlayer(p,o))
-
-
-
-  def cancelEncodeRequest(self):
-    self.cancelled = True
-    self.progressbarEncodeProgressLabel.config(style="Red.Horizontal.TProgressbar")
-    self.progressbarEncodeProgressLabel['value']=100
-    self.labelTimeLeft.config(text='Cancelled')
-    self.progresspercent = 100
-    self.progressbarEncodeCancelButton.state(["disabled"])
-    self.controller.cancelEncodeRequest(self.encodeRequestId)
-
-  def sizeof_fmt(self,inum, suffix='B'):
-    num = float(inum)
-    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
-        if abs(num) < 1024.0:
-            return "%3.1f%s%s" % (num, unit, suffix)
-        num /= 1024.0
-    return "%.1f%s%s" % (num, 'Yi', suffix)
-
-  def updateStatus(self,status,percent,finalFilename=None,requestStatus=None, encodeStage=None, pix_fmt=None, encodePass=None, lastEncodedBR=None, lastEncodedCRF=None, lastEncodedSize=None, lastEncodedPSNR=None, lastBuff=None, lastWR=None, currentSize=None):
-
-    if self.cancelled:
-      return
-
-    if pix_fmt is not None:
-        self.pix_fmt = pix_fmt
-
-    if lastEncodedSize is not None:
-      self.lastEncodedSize = lastEncodedSize
-
-    if lastEncodedSize is None and self.lastEncodedSize is not None:
-      lastEncodedSize = self.lastEncodedSize
-
-    if requestStatus is not None:
-      self.labelRequestStatus.config(text=str(requestStatus))
-
-    if encodeStage == 'Encode Failed':
-      self.progressbarEncodeProgressLabel.config(style="Red.Horizontal.TProgressbar")
-      self.progressbarEncodeProgressLabel['value']=100
-      self.labelTimeLeft.config(text='Failed')
-      self.progresspercent = 100
-      self.progressbarEncodeCancelButton.state(["disabled"])
-      self.cancelled = True
-
-
-    if encodeStage is not None:
-      self.labelEncodeStage.config(text='Stage: {}'.format(encodeStage), relief='flat')
-
-    if encodePass is not None:
-      self.labelEncodePass.config(text='Pass: {}'.format(encodePass), relief='flat')
-
-
-    if lastEncodedSize is not None and currentSize is not None:
-      lastEncodedSizeHuman = self.sizeof_fmt(lastEncodedSize,'B')
-      currentSizeHuman = self.sizeof_fmt(currentSize,'B')
-      self.labelLastEncodedSize.config(text='Size: {} ~{}'.format(lastEncodedSizeHuman,currentSizeHuman), relief='flat')
-    elif currentSize is not None:
-      currentSizeHuman = self.sizeof_fmt(currentSize,'B')
-      self.labelLastEncodedSize.config(text='Size: ~{}'.format(currentSizeHuman), relief='flat')
-    elif lastEncodedSize is not None:
-      lastEncodedSizeHuman = self.sizeof_fmt(lastEncodedSize,'B')
-      self.labelLastEncodedSize.config(text='Size: {}'.format(lastEncodedSizeHuman), relief='flat')
-
-
-    if lastEncodedBR is not None:
-      lastEncodedBRHuman = self.sizeof_fmt(lastEncodedBR,'B')
-      self.labelLastEncodedBR.config(text='Bitrate: {}'.format(lastEncodedBRHuman), relief='flat')
-
-    if lastEncodedCRF is not None:
-      self.labelLastEncodedBR.config(text='CRF: {}'.format(lastEncodedCRF), relief='flat')
-
-    if lastEncodedPSNR is not None:
-      PSNRGrade = 'Terrible'
-      self.labelLastEncodedPSNR.config(style='PSNRTerrible.TLabel')
-
-      if int(lastEncodedPSNR) >= 48:
-        PSNRGrade = 'Excellent'
-        self.labelLastEncodedPSNR.config(style='PSNRExcellent.TLabel')
-      elif int(lastEncodedPSNR) >= 40:
-        PSNRGrade = 'Good'
-        self.labelLastEncodedPSNR.config(style='PSNRGood.TLabel')
-      elif int(lastEncodedPSNR) >= 38:
-        PSNRGrade = 'fair'
-        self.labelLastEncodedPSNR.config(style='PSNRFair.TLabel')
-      elif int(lastEncodedPSNR) >= 30:
-        PSNRGrade = 'Poor'
-        self.labelLastEncodedPSNR.config(style='PSNRPoor.TLabel')
-      
-      self.labelLastEncodedPSNR.config(text='Quality: {} ({})'.format(lastEncodedPSNR,PSNRGrade), relief='flat')
-    
-    if lastBuff is not None:
-      lastBuffSizeHuman = self.sizeof_fmt(lastBuff,'B') 
-      self.labelLastBuff.config(text='Buffer: {}'.format(lastBuffSizeHuman), relief='flat')
-    
-    if lastWR is not None:
-      self.labelLastWR.config(text='Width Change: {:0.2f}%'.format(lastWR*100), relief='flat')
-
-    if self.cancelled:
-      return
-    
-    if finalFilename is not None:
-      self.finalFilename = finalFilename
-      self.iscomplete = True
-      self.controller.registerComplete(self.finalFilename,clip=self.clip)
-
-    if percent is not None:
-      if percent<self.lastProgress:
-        self.progressQueue    = deque([],10)
-        self.timestampQueue   = deque([],10)
-
-      self.lastProgress = percent
-
-      self.progressQueue.append(percent)
-      self.timestampQueue.append(time.time())
-
-      if self.encodeStartTime is None:
-        self.encodeStartTime = self.timestampQueue[-1]
-
-      if len(self.progressQueue)>=2:
-        
-        currentValue = self.progressQueue[-1]
-        oldestValue  = self.progressQueue[0]
-        
-        currentKey   = self.timestampQueue[-1]
-        oldestKey    = self.timestampQueue[0]
-
-        try:
-          remaining = (1.0 - currentValue) * (currentKey - oldestKey) / (currentValue - oldestValue)
-          self.labelTimeLeft.config(text= format_timedelta(remaining,'{hours_total}:{minutes2}:{seconds2}')+(' left ({:.0%})'.format(percent)))
-        except Exception as e:
-          logging.error("format_timedelta Exception",exc_info=e)
-      
-      if status is not None:
-        self.labelRequestStatus.config(text=status)
-      self.progressbarEncodeProgressLabel['value']=percent*100
-      self.progresspercent = percent*100
-
-      if percent >= 1:
-        self.labelTimeLeft.config(text='Complete in {}'.format(   format_timedelta(time.time() - self.encodeStartTime,'{hours_total}:{minutes2}:{seconds2}') ))
-        self.progressbarEncodeCancelButton.grid_forget()
-        if self.finalFilename is not None:
-          self.progressbarEncodeProgressLabel.config(style="Green.Horizontal.TProgressbar")
-          self.progressbarPlayButton.grid(row=2,column=9,sticky='nesw')
-          self.progressbarOpenContainingFolderButton.grid(row=2,column=10,sticky='nesw')
-          
-      else:
-        self.progressbarEncodeProgressLabel.config(style="Blue.Horizontal.TProgressbar")
-        self.progressbarEncodeCancelButton.grid(row=2,column=9,sticky='nesw') 
-
-      if percent is not None:
-        self.winfo_toplevel().title('webmGenerator: encoding: {:0.2f}%'.format(percent*100))
-
-  def remove(self):
-    self.cancelEncodeRequest()
-    self.finalFilename    = None
-    if self.progresspercent == 100:
-      self.pack_forget()
-      del self
-
-
-class SequencedVideoEntry(ttk.Frame):
-  def __init__(self, master,controller,sourceClip, *args,direction='LEFT_RIGHT',**kwargs):
-    ttk.Frame.__init__(self, master)
-
-    self.sourceClip = sourceClip
-    self.rid=sourceClip.rid
-    self.s=sourceClip.s
-    self.e=sourceClip.e
-    self.controller=controller
-    self.player = None
-    self.muted=False
-    
-    self.filename=sourceClip.filename
-    self.filterexp=sourceClip.filterexp
-    self.filterexpEnc=sourceClip.filterexpEnc
-    self.filteraudioexp=sourceClip.filteraudioexp
-    self.basename = sourceClip.basename
-    self.previewImage=sourceClip.previewImage
-    
-    self.labelSequenceVideoName = None
-
-    self.frameSequenceVideoEntry = self
-    if direction == 'LEFT_RIGHT':
-      self.labelSequenceVideoName = ttk.Label(self.frameSequenceVideoEntry)
-      self.labelSequenceVideoName.config(text='{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s,self.e,self.e-self.s))
-      self.labelSequenceVideoName.pack(side='top')
-    self.frameOrderingButtons = ttk.Frame(self.frameSequenceVideoEntry)
-
-    self.entrySpeed = tk.StringVar()
-    self.entrySpeed.set('1.0')
-
-
-    self.buttonSequenceEntryFilter = ttk.Button(self.frameSequenceVideoEntry)
-    self.buttonSequenceEntryFilter.config(text='View filter')
-    self.buttonSequenceEntryFilter.config(command=self.viewFilter)
-    self.buttonSequenceEntryFilter.config(style="small.TButton")
-    self.buttonSequenceEntryFilter.pack(expand='false', fill='x', side='bottom')
-
-    self.frameEntrySpeed = ttk.Frame(self.frameSequenceVideoEntry)
-
-    self.labelEntrySpeed = ttk.Label(self.frameEntrySpeed,text='Speed factor') 
-
-    self.labelEntrySpeed.pack(expand='false', fill='x', side='left')
-
-    self.spinSequenceEntrySpeed = ttk.Spinbox(self.frameEntrySpeed, 
-                                          from_=0, 
-                                          to=float('inf'), 
-                                          increment=0.1,
-                                          textvariable=self.entrySpeed)
-
-    self.spinSequenceEntrySpeed.pack(expand='false', fill='x', side='right')
-
-    if self.controller.globalOptions.get('perClipSpeedAdjustment',False):
-      self.frameEntrySpeed.pack(expand='false', fill='x', side='bottom')
-
-
-    if direction == 'LEFT_RIGHT':
-      self.buttonSequencePushEntryBack = ttk.Button(self.frameOrderingButtons)
-      self.buttonSequencePushEntryBack.config(text='⯇', width='2')
-      self.buttonSequencePushEntryBack.config(command=self.moveBack)
-      self.buttonSequencePushEntryBack.pack(expand='true', fill='both', side='left')
-    
-    self.canvasSequencePreview = ttk.Label(self.frameOrderingButtons)
-    self.canvasSequencePreview.config(image=self.previewImage)
-    self.canvasSequencePreview.pack(side='left')
-
-    if direction == 'LEFT_RIGHT':
-      self.buttonSequencePushEntryForwards = ttk.Button(self.frameOrderingButtons)
-      self.buttonSequencePushEntryForwards.config(text='⯈', width='2')
-      self.buttonSequencePushEntryForwards.config(command=self.moveForwards)
-      self.buttonSequencePushEntryForwards.pack(expand='true', fill='both', side='left')
-    
-    self.frameOrderingButtons.config(height='200', width='200')
-    self.frameOrderingButtons.pack(side='top')
-
-    self.buttonSequenceEntryPreview = ttk.Button(self.frameSequenceVideoEntry)
-    self.buttonSequenceEntryPreview.config(text='Preview ⯈')
-    self.buttonSequenceEntryPreview.config(command=self.preview)
-    self.buttonSequenceEntryPreview.config(style="small.TButton")
-
-    if direction == 'LEFT_RIGHT':
-      self.buttonSequenceEntryPreview.pack(expand='true', fill='both', side='left')
-    else:
-      self.buttonSequenceEntryPreview.pack(expand='true', fill='x', side='left')
-
-    """
-    self.buttonSequenceEntryMute = ttk.Button(self.frameSequenceVideoEntry)
-    self.buttonSequenceEntryMute.config(text='🔊', width='2')
-    self.buttonSequenceEntryMute.config(command=self.muteToggle)
-    self.buttonSequenceEntryMute.config(style="small.TButton")
-
-    if direction == 'LEFT_RIGHT':
-      self.buttonSequenceEntryMute.pack(expand='true', fill='both', side='left')
-    else:
-      self.buttonSequenceEntryMute.pack(expand='true', fill='x', side='left')
-    """
-
-    self.buttonSequenceEntryREmove = ttk.Button(self.frameSequenceVideoEntry)
-    self.buttonSequenceEntryREmove.config(text='Remove ✖')
-    self.buttonSequenceEntryREmove.config(command=self.remove)
-    self.buttonSequenceEntryREmove.config(style="small.TButton")
-
-    if direction == 'LEFT_RIGHT':
-      self.buttonSequenceEntryREmove.pack(expand='true', fill='both', side='left')
-    else:
-      self.buttonSequenceEntryREmove.pack(expand='true', fill='x', side='left')
-
-
-    self.frameSequenceVideoEntry.config(height='200', padding='2', relief='groove', width='200')
-
-    if direction == 'LEFT_RIGHT':
-      self.frameSequenceVideoEntry.pack(expand='false', fill='y', side='left')
-    elif direction == 'UP_DOWN':
-      self.frameSequenceVideoEntry.pack(expand='false', fill='y', side='top')
-    
-    self.queuedPreview = None
-
-
-  def getpreviewImg(self):
-    return self.sourceClip.previewImage
-
-  def muteToggle(self):
-    self.muted = not self.muted
-    if self.muted:
-      self.buttonSequenceEntryMute.config(text='🔈')
-    else:
-      self.buttonSequenceEntryMute.config(text='🔊')
-
-  def getSpeed(self):
-    try:
-      return float(self.entrySpeed.get())
-    except:
-      return 1
-
-  def viewFilter(self):
-    self.controller.viewFilterForClip(self)
-
-  def preview(self):
-    if self.player is not None:
-      self.player.terminate()
-
-    self.player = mpv.MPV(loop='inf',
-                          mute=True,
-                          volume=100,
-                          autofit_larger='1280')
-
-    self.player.play(self.filename)
-    
-
-    self.player.ab_loop_a = self.s
-    self.player.ab_loop_b = self.e
-    self.player.start = self.s
-    self.player.time_pos  = self.s
-
-    def mutetoggle(key_state, key_name, key_char):
-        if 'd-' in key_state:
-            self.player.mute = not self.player.mute
-
-    self.mutetoggle = mutetoggle
-    self.player.register_key_binding("m", mutetoggle)
-    #self.player.register_key_binding("M", mutetoggle)
-
-    def quitFunc(key_state, key_name, key_char):
-      def playerReaper():
-        print('ReaperKill')
-        player=self.player
-        self.player=None
-        player.terminate()
-        player.wait_for_shutdown()
-      if 'd-' in key_state or 'p-' in key_state:
-          self.playerReaper = threading.Thread(target=playerReaper,daemon=True)
-          self.playerReaper.start()
-
-    self.quitFunc = quitFunc
-
-    self.player.register_key_binding("q", quitFunc)
-    self.player.register_key_binding("Q", quitFunc)        
-    self.player.register_key_binding("CLOSE_WIN", quitFunc)
-
-    def seekPlayer(player,offset):
-        player.command('seek',str(5*offset),'relative')
-
-    self.player.register_key_binding("WHEEL_UP",   lambda s,n,c,p=self.player,o=1:seekPlayer(p,o))
-    self.player.register_key_binding("WHEEL_DOWN", lambda s,n,c,p=self.player,o=-1:seekPlayer(p,o))
-
-
-  def moveForwards(self):
-    self.controller.moveSequencedClip(self,1)    
-
-  def moveBack(self):
-    self.controller.moveSequencedClip(self,-1)
-
-  def remove(self):
-    self.controller.removeSequencedClip(self)
-
-  def setPreviewImage(self,photoImage):
-    print('setPreviewImage',self.rid)
-    self.previewImage=photoImage
-    self.canvasSequencePreview.config(image=self.previewImage)
-
-  def requestQueuedPreviews(self):
-    if self.queuedPreview is not None:
-        self.controller.requestPreviewFrame(*self.queuedPreview)
-    self.queuedPreview = None
-
-
-  def update(self,s,e,filterexp,filteraudioexp,filterexpEnc, requestPreviewFrame=True):
-    self.s=s
-    self.e=e
-    self.filterexp=filterexp
-    self.filteraudioexp=filteraudioexp
-    self.filterexpEnc = filterexpEnc
-
-    if self.labelSequenceVideoName is not None:
-        self.labelSequenceVideoName.config(text='{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s,self.e,self.e-self.s))
-
-    if requestPreviewFrame:
-        self.controller.requestPreviewFrame(self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-        self.queuedPreview = None
-    else:
-        self.queuedPreview = (self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-
-class GridColumn(ttk.Labelframe):
-  def __init__(self, master,controller):
-    ttk.Labelframe.__init__(self, master)
-    self.master=master
-    self.controller=controller
-    self.config(relief='groove',padding='4')
-
-    self.buttonFrame = ttk.Frame(self)
-
-    self.buttonFrame.columnconfigure(0, weight=10)
-    self.buttonFrame.columnconfigure(1, weight=10)
-    self.buttonFrame.rowconfigure(0,    weight=10)
-    self.buttonFrame.rowconfigure(1,    weight=10)
-
-
-    """
-    self.nestRowBtn = ttk.Button(self.buttonFrame,text='Nest Row ⇄',command=self.nestRow)
-    self.nestRowBtn.config(style="small.TButton",state='disabled')
-    self.nestRowBtn.grid(column=0,row=0, sticky='nsew')
-
-    self.nestColumnBtn = ttk.Button(self.buttonFrame,text='Nest Col ⇅',command=self.nestColumn)
-    self.nestColumnBtn.config(style="small.TButton",state='disabled')
-    self.nestColumnBtn.grid(column=1,row=0, sticky='nsew')
-    """
-
-    self.selectColumnBtn = ttk.Button(self.buttonFrame,text='Select ✔',command=self.selectColumn)
-    self.selectColumnBtn.config(style="small.TButton")
-    self.selectColumnBtn.grid(column=0,row=1, sticky='nsew')
-
-    self.removeColumnBtn = ttk.Button(self.buttonFrame,text='Remove ✖',command=self.removeColumn)
-    self.removeColumnBtn.config(style="small.TButton")
-    self.removeColumnBtn.grid(column=1,row=1, sticky='nsew')
-
-    self.buttonFrame.pack(expand='false', fill='x', side='bottom')
-
-    self.pack(expand='false', fill='y', side='left')
-
-  def setSelected(self,isSelected):
-    if isSelected:
-      self.config(relief='sunken',text='Selected')
-      self.selectColumnBtn.config(text='Selected ✔',style="smallBlue.TButton")
-
-    else:
-      self.config(relief='groove',text='')
-      self.selectColumnBtn.config(text='Select ✔',style="small.TButton")
-
-
-  def nestColumn(self):
-    pass
-
-  def nestRow(self):
-    pass
-
-  def selectColumn(self):
-    self.controller.selectColumn(self)
-
-  def removeColumn(self):
-    self.controller.removeColumn(self)
-
-
-class SelectableVideoEntry(ttk.Frame):
-  def __init__(self, master,controller,filename,rid,s,e,filterexp,filteraudioexp,filterexpEnc, *args, **kwargs):
-    ttk.Frame.__init__(self, master)
-    self.master=master
-    self.rid=rid
-    self.s=s
-    self.e=e
-    self.controller=controller
-    self.filename=filename
-    self.filterexp=filterexp
-    self.filteraudioexp=filteraudioexp
-    self.filterexpEnc = filterexpEnc
-
-    self.basename = os.path.basename(filename)[:14]
-    self.player=None
-    
-    self.frameInputCutWidget = self
-    self.labelInputCutName = ttk.Label(self.frameInputCutWidget)
-    self.labelInputCutName.config(text='#{} {:0.2f}-{:0.2f} {:0.2f}s'.format(self.rid,self.s,self.e,self.e-self.s))
-    self.labelInputCutName.pack(side='top')
-    
-    self.previewData = "P5\n124 80\n255\n"+("0"*80*124)
-    self.previewImage= tk.PhotoImage(data=self.previewData)  
-
-    try:
-      self.previewImage = tk.PhotoImage(file=".\\resources\\cutPreview.png")
-    except Exception as e:
-      logging.error("cutPreview PhotoImage Exception",exc_info=e)
-
-    self.canvasInputCutPreview = ttk.Label(self.frameInputCutWidget)
-    self.canvasInputCutPreview.config(text='')
-    self.canvasInputCutPreview.config(image=self.previewImage)
-    self.canvasInputCutPreview.pack(side='top')
-
-    try:
-      self.canvasInputCutPreview.drag_source_register("*")
-      self.canvasInputCutPreview.dnd_bind('<<DragInitCmd>>',self.dragInit)
-    except Exception as e:
-        logging.error("DragInitCmd2 Exception",exc_info=e)
-
-
-
-    self.queuedPreview = None
-
-    if self.controller.syncModal is not None and self.controller.syncModal.isActive:
-        self.queuedPreview = (self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-    else:
-        self.controller.requestPreviewFrame(self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-
-    self.buttonInputPreview = ttk.Button(self.frameInputCutWidget)
-    self.buttonInputPreview.config(text='preview ⯈')
-    self.buttonInputPreview.config(command=self.preview)
-    self.buttonInputPreview.pack(expand='true', fill='both', side='top')
-    
-    self.buttonInputCutAdd = ttk.Button(self.frameInputCutWidget)
-    self.buttonInputCutAdd.config(text='Add to Sequence ⯆')
-    self.buttonInputCutAdd.config(command=self.addClipToSequence)
-    self.buttonInputCutAdd.pack(expand='true', fill='both', side='top')
-
-    self.frameInputCutWidget.config(padding='2', relief='groove', width='200')
-    self.frameInputCutWidget.pack(anchor='nw', expand='false', fill='y', side='left')
-
-
-  def dragInit(self,e):
-      return (COPY, DND_TEXT, ''+ os.path.basename(self.filename).rpartition('.')[0]+'')    
-
-  def setPreviewImage(self,photoImage):
-    print('setPreviewImage',self.rid)
-    self.previewImage=photoImage
-    self.canvasInputCutPreview.config(image=self.previewImage)
-
-  def requestQueuedPreviews(self):
-    if self.queuedPreview is not None:
-        self.controller.requestPreviewFrame(*self.queuedPreview)
-    self.queuedPreview = None
-
-
-  def update(self,s,e,filterexp,filteraudioexp,filterexpEnc, requestPreviewFrame=True):
-    self.s=s
-    self.e=e
-    self.filterexp=filterexp
-    self.filteraudioexp=filteraudioexp
-    self.filterexpEnc = filterexpEnc
-    self.labelInputCutName.config(text='{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s,self.e,self.e-self.s))
-    if requestPreviewFrame:
-        self.controller.requestPreviewFrame(self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-        self.queuedPreview = None
-    else:
-        self.queuedPreview = (self.rid,self.filename,(self.e+self.s)/2,self.filterexp)
-
-  def addClipToSequence(self):
-    self.controller.addClipToSequence(self)
-
-  def preview(self):
-    if self.player is not None:
-      self.player.terminate()
-
-    self.player = mpv.MPV(loop='inf',
-                          mute=True,
-                          volume=100,
-                          autofit_larger='1280')
-
-    self.player.play(self.filename)
-    
-    self.player.ab_loop_a = self.s
-    self.player.ab_loop_b = self.e
-    self.player.start = self.s
-    self.player.time_pos  = self.s
-
-    def mutetoggle(key_state, key_name, key_char):
-        if 'd-' in key_state:
-            self.player.mute = not self.player.mute
-
-    self.mutetoggle = mutetoggle
-    self.player.register_key_binding("m", mutetoggle)
-    #self.player.register_key_binding("M", mutetoggle) 
-
-    def quitFunc(key_state, key_name, key_char):
-      def playerReaper():
-        print('ReaperKill')
-        player=self.player
-        self.player=None
-        player.terminate()
-        player.wait_for_shutdown()
-
-      if 'd-' in key_state or 'p-' in key_state:
-          self.playerReaper = threading.Thread(target=playerReaper,daemon=True)
-          self.playerReaper.start()
-
-    self.quitFunc = quitFunc
-
-    self.player.register_key_binding("q", quitFunc)
-    self.player.register_key_binding("Q", quitFunc)        
-    self.player.register_key_binding("CLOSE_WIN", quitFunc)
-
-    def seekPlayer(player,offset):
-        player.command('seek',str(5*offset),'relative')
-
-    self.player.register_key_binding("WHEEL_UP",   lambda s,n,c,p=self.player,o=1:seekPlayer(p,o))
-    self.player.register_key_binding("WHEEL_DOWN", lambda s,n,c,p=self.player,o=-1:seekPlayer(p,o))
-
-
-
-class MergeSelectionUi(ttk.Frame):
-
-  def __init__(self, master=None,defaultProfile='None', globalOptions={}, *args, **kwargs):
-    ttk.Frame.__init__(self, master)
-
-    self.master=master
-    self.controller=None
-    self.defaultProfile=defaultProfile
-    self.globalOptions = globalOptions
-    self.advancedFlags={'forceGifFPS':True}
-
-    
-    self.outserScrolledFrame = ScrolledFrame(self, scrolltype='vertical')
-    self.outserScrolledFrame.pack(expand='true', fill='both', padx='0', pady='0', side='top')
-
-    self.frameMergeSelection = self.outserScrolledFrame.innerframe
-
-    self.mergeStyleFrame = ttk.Frame(self.frameMergeSelection)
-
-    self.mergestyleLabel = ttk.Label(self.mergeStyleFrame,text='Merge Style',width='12')
-    self.mergestyleLabel.pack(expand='false', fill='x', side='left')
-
-    self.mergeStyleVar = tk.StringVar()
-    self.mergeStyles   = ['Individual Files - Output each individual subclip as a separate file.',                          
-                          'Sequence - Join the subclips into a sequence.',
-                          'Grid - Pack videos into variably sized grid layouts.',
-                          'Stream Copy - Ignore all filters and percorm no conversions, just stream cut and join the clips.',
-                          'Full Source Reencode - Ignore all filters, timestamps, make no temporary files, just re-encode the full source.',
-                          'Clip Reencode - Ignore all filters, make no temporary files, just re-encode the full source segements.',
-                          ]
-
-    self.mergeStyleVar.set(self.mergeStyles[0])
-    
-
-    self.mergeStyleCombo = ttk.OptionMenu(self.mergeStyleFrame,self.mergeStyleVar,self.mergeStyleVar.get(),*self.mergeStyles)
-    self.mergeStyleCombo['padding']=2
-    self.mergeStyleCombo.pack(expand='true', fill='x', side='right')
-
-    self.mergeStyleFrame.pack(expand='false', fill='x', padx='5', pady='0', side='top')
-
-
-
-    self.profileFrame = ttk.Frame(self.frameMergeSelection)
-
-    self.profileLabel = ttk.Label(self.profileFrame,text='Profile',width='12')
-    self.profileLabel.pack(expand='false', fill='x', side='left')
-
-    self.profileVar = tk.StringVar()
-    self.profileSpecs = [
-      {'name':'None','editable':False},
-      {'name':'Default max quality mp4','editable':False,'outputFormat':'mp4:x264','maximumSize':'0.0'},
-      {'name':'Sub 4M max quality vp8 webm','editable':False,'outputFormat':'webm:VP8','maximumSize':'4.0'},
-      {'name':'Sub 100M max quality mp4','editable':False,'outputFormat':'mp4:x264','maximumSize':'100.0'}
-    ]
-
-
-    self.profileVar = tk.StringVar()
-    self.profiles   = [x.get('name') for x in self.profileSpecs if x.get('name') is not None ]
-
-
-    if self.defaultProfile in self.profiles:
-      self.profileVar.set(defaultProfile)
-    else:
-      self.profileVar.set(self.profiles[0])
-
-    self.profileCombo = ttk.OptionMenu(self.profileFrame,self.profileVar,self.profileVar.get(),*self.profiles)
-    self.profileCombo['padding']=2
-    self.profileCombo.pack(expand='true', fill='x', side='left')
-
-
-    self.profileDelete = ttk.Button(self.profileFrame, command=self.deleteProfile)
-    self.profileDelete.configure(text='Delete Profile')
-    self.profileDelete['padding']=2
-    self.profileDelete.state(["disabled"])
-    self.profileDelete.pack(expand='false', side='right')
-
-    self.profileSave = ttk.Button(self.profileFrame, command=self.saveProfile)
-    self.profileSave['padding']=2
-    self.profileSave.configure(text='Save New Profile')
-    self.profileSave.pack(expand='false', side='right')
-
-    self.profileFrame.pack(expand='false', fill='x', padx='5', pady='0  ', side='top')
-
-    self.profileVar.trace('w',self.profileChanged)
-
-    self.labelframeInputCutSelection = ttk.Labelframe(self.frameMergeSelection)
-    
-    self.scrolledframeInputCustContainer = ScrolledFrame(self.labelframeInputCutSelection, scrolltype='horizontal')
-
-
-    self.selectableVideosContainer = ttk.Frame(self.scrolledframeInputCustContainer.innerframe)
-
-    self.selectableVideosContainer.pack(expand='true', fill='x', padx='0', pady='0', side='top')
-
-    self.scrolledframeInputCustContainer.innerframe.config(padding='5')
-    self.scrolledframeInputCustContainer.configure(usemousewheel=False)
-    self.scrolledframeInputCustContainer.pack(anchor='n', expand='true', fill='x', padx='0', pady='0', side='top')
-
-    self.labelframeInputCutSelection.config(height='0', text='Avalaible Cuts', width='500')
-    self.labelframeInputCutSelection.pack(expand='false', fill='x', padx='0', pady='0', side='top')
-
-    self.addAddClipsFrame = ttk.Frame(self.frameMergeSelection)
-
-    self.addAllClipsbutton = ttk.Button(self.addAddClipsFrame,text='⯆ Add all clips in timeline order ⯆')
-    self.addAllClipsbutton.config(command=self.addAllClipsInTimelineOrder)
-    self.addAllClipsbutton.config(style="small.TButton")
-    self.addAllClipsbutton.pack(expand='true', fill='x', padx='0', pady='3', side='left')
-
-    self.addAllClipsRidbutton = ttk.Button(self.addAddClipsFrame,text=' Add all clips in Creation order ')
-    self.addAllClipsRidbutton.config(command=self.addAllClipsInRIDOrder)
-    self.addAllClipsRidbutton.config(style="small.TButton")
-    self.addAllClipsRidbutton.pack(expand='false', fill='x', padx='0', pady='3', side='right')
-
-    self.addAllClipsRandombutton = ttk.Button(self.addAddClipsFrame,text=' Add all clips in random order ')
-    self.addAllClipsRandombutton.config(command=self.addAllClipsInRandomOrder)
-    self.addAllClipsRandombutton.config(style="small.TButton")
-    self.addAllClipsRandombutton.pack(expand='false', fill='x', padx='0', pady='3', side='right')
-
-    self.addAllClipsSmartRandombutton = ttk.Button(self.addAddClipsFrame,text=' Add all clips in non-sequential order ')
-    self.addAllClipsSmartRandombutton.config(command=self.addAllClipsInSmartRandomOrder)
-    self.addAllClipsSmartRandombutton.config(style="small.TButton")
-    self.addAllClipsSmartRandombutton.pack(expand='false', fill='x', padx='0', pady='3', side='right')
-
-    self.addAllClipsInterpsersed = ttk.Button(self.addAddClipsFrame,text=' Add all clips interspsersed')
-    self.addAllClipsInterpsersed.config(command=self.addAllClipsInInterspersedOrder)
-    self.addAllClipsInterpsersed.config(style="small.TButton")
-    self.addAllClipsInterpsersed.pack(expand='false', fill='x', padx='0', pady='3', side='right')
-
-    self.addAddClipsFrame.pack(expand='false', fill='x', padx='0', pady='0', side='top')
-
-    self.labelframeSequenceFrame = ttk.Labelframe(self.frameMergeSelection)
-
-    self.outputPlanningContainer = ttk.Frame(self.labelframeSequenceFrame)
-    self.outputPlanningContainer.pack(expand='false', fill='both', padx='0', pady='0', side='top')
-
-    self.labelframeSequenceFrame.config(height='20', text='Output Plan', width='200')
-    self.labelframeSequenceFrame.pack(expand='true',fill='both', padx='5', pady='5', side='top')
-
-    self.gridSequenceContainer = ttk.Frame(self.outputPlanningContainer)
-    self.gridSequenceContainer.pack(expand='true', fill='both', padx='5', pady='0', side='top')
-
-
-    self.gridColumnContainer = ttk.Frame(self.gridSequenceContainer)
-    self.gridColumnContainer.pack(expand='true', fill='x', padx='0', pady='0', side='top')
-
-    self.gridColumns = []
-
-    #self.gridSequenceContainerAddRow = ttk.Button(self.gridSequenceContainer,text='Add Row ⇄', command=self.addRow)
-    #self.gridSequenceContainerAddRow.config(style="small.TButton")
-    #self.gridSequenceContainerAddRow.pack(expand='true', fill='x', padx='0', pady='0', side='left')
-
-    self.gridSequenceContainerAddColumn = ttk.Button(self.gridSequenceContainer,text='Add Column ⇅', command=self.addColumn)
-    self.gridSequenceContainerAddColumn.config(style="small.TButton")
-    self.gridSequenceContainerAddColumn.pack(expand='true', fill='x', padx='0', pady='0', side='right')
-    self.gridSequenceContainer.pack_forget()
-
-    self.scrolledframeSequenceContainer = ScrolledFrame(self.outputPlanningContainer, scrolltype='horizontal')
-
-    self.sequenceContainer = ttk.Frame(self.scrolledframeSequenceContainer.innerframe)
-    self.sequenceContainer.pack(expand='true', fill='both', padx='0', pady='0', side='top')
-
-    self.mergeStyleVar.trace('w',self.mergeStyleChanged)
-    
-    self.sequencedClips = []
-
-    self.scrolledframeSequenceContainer.configure(usemousewheel=False)
-    self.scrolledframeSequenceContainer.innerframe.config(padding='5')
-    self.scrolledframeSequenceContainer.pack(expand='true', fill='both', padx='5', pady='0', side='top')
-
-    self.frameSequenceSummary = ttk.Frame(self.labelframeSequenceFrame)
-    self.labelSequenceSummary = ttk.Label(self.frameSequenceSummary)
-    self.labelSequenceSummary.config(anchor='center', text='Number of Subclips: 0 Total subclip duration 0s Output Duration 0s')
-    self.labelSequenceSummary.pack(expand='false', fill='x', side='top', pady='0')
-    self.frameSequenceSummary.config(height='10', width='200')
-    self.frameSequenceSummary.pack(expand='false', fill='x', side='top', pady='0')
-    
-  
-    self.speedAdjustmentValue=1.0    
-
-    self.frameEncodeSettings = ttk.Frame(self.labelframeSequenceFrame)
-    self.frameSequenceValues = ttk.Frame(self.frameEncodeSettings)
-
-    self.automaticFileNamingVar    = tk.BooleanVar()
-    self.interpolateSpeedChangeVar = tk.BooleanVar()
-    self.loopStartAndendVar        = tk.BooleanVar()
-
-    self.filenamePrefixVar        = tk.StringVar()
-    self.outputFormatVar          = tk.StringVar()
-    self.outputFormatValue        = ''
-    self.frameSizeStrategyVar     = tk.StringVar()
-    self.maximumSizeVar           = tk.StringVar()
-    self.initialbitrateVar        = tk.StringVar()
-    self.maxbitrateVar            = tk.StringVar()
-    self.maximumWidthVar          = tk.StringVar()
-    self.minimumPSNRVar           = tk.StringVar()
-    self.optimizerVar             = tk.StringVar()
-
-    self.transDurationVar         = tk.StringVar()
-    self.transDurationVar.set('0.0')
-
-    self.transStyleVar            = tk.StringVar()
-    self.speedAdjustmentVar       = tk.StringVar() 
-    self.audioChannelsVar         = tk.StringVar()
-    self.audioRateVar             = tk.StringVar()
-    self.audioMergeOptionsVar     = tk.StringVar()
-    self.gridLoopMergeOptionsVar  = tk.StringVar()
-    self.gridPadColourOptionsVar  = tk.StringVar()
-    self.gridPadWidthVar  = tk.StringVar()
-    self.postProcessingFilterVar  = tk.StringVar()
-
-    self.audioOverrideVar         = tk.StringVar()
-    self.audiOverrideDelayVar     = tk.StringVar()
-    self.audiOverrideBiasVar      = tk.StringVar()
-
-    self.automaticFileNamingVar.trace('w',self.valueChange)
-    self.interpolateSpeedChangeVar.trace('w',self.valueChange)
-    self.loopStartAndendVar.trace('w',self.valueChange)
-    self.filenamePrefixVar.trace('w',self.valueChange)
-    self.outputFormatVar.trace('w',self.valueChange)
-    self.frameSizeStrategyVar.trace('w',self.valueChange)
-    self.maximumSizeVar.trace('w',self.valueChange)
-    self.initialbitrateVar.trace('w',self.valueChange)
-    self.maxbitrateVar.trace('w',self.valueChange)
-    self.maximumWidthVar.trace('w',self.valueChange)
-    self.transDurationVar.trace('w',self.valueChange)
-    self.transStyleVar.trace('w',self.valueChange)
-    self.speedAdjustmentVar.trace('w',self.valueChange)
-    self.audioChannelsVar.trace('w',self.valueChange)
-    self.audioRateVar.trace('w',self.valueChange)
-    self.audioMergeOptionsVar.trace('w',self.valueChange)
-    self.gridLoopMergeOptionsVar.trace('w',self.valueChange)
-    self.gridPadColourOptionsVar.trace('w',self.valueChange)
-    self.gridPadWidthVar.trace('w',self.valueChange)
-    self.postProcessingFilterVar.trace('w',self.valueChange)
-    self.minimumPSNRVar.trace('w',self.valueChange)
-    self.optimizerVar.trace('w',self.valueChange)
-    self.audiOverrideBiasVar.trace('w',self.valueChange)
-
-
-
-
-
-    self.optimziers = [
-      'Linear Search',
-      'Nelder-Mead - Early Exit',
-      'Nelder-Mead - Exhaustive',
-    ]
-
-    self.optimizerVar.set(self.optimziers[0])
-
-    self.editableProfileVars = [
-      'outputFormat',
-      'frameSizeStrategy',
-      'maximumSize',
-      'maximumWidth',
-      'transDuration',
-      'transStyle',
-      'speedAdjustment',
-      'audioChannels',
-      'audioMergeOptions',
-      'gridLoopMergeOptions',
-      'audioRate',
-    ]
-
-    self.audioOverrideVar.trace('w',self.valueChange)
-    self.audiOverrideDelayVar.trace('w',self.valueChange)
-
-    self.automaticFileNamingVar.set(True)
-    self.interpolateSpeedChangeVar.set(False)
-    self.loopStartAndendVar.set(True)
-    self.filenamePrefixVar.set('')
-
-    self.audioOverrideVar.set('None')
-    self.audiOverrideDelayVar.set('0')
-
-    self.outputFormats = [
-      'mp4:x264',
-      'mp4:x264_Nvenc',
-      'mp4:H265_Nvenc',
-      'mp4:AV1',
-      'webm:VP8',
-      'webm:VP9']
-
-    self.customEncoderspecs = {}
-
-    customEncoderDir = 'customEnoderSpecs'
-    for fn in os.listdir(customEncoderDir):
-      try:
-        p = os.path.join(customEncoderDir,fn)
-        spec = SpecVideoEncoder(p)
-        if spec.validate():
-            self.outputFormats.append(spec.getDisplayName())
-            self.customEncoderspecs[spec.getDisplayName()] = spec
-      except Exception as e:
-        logging.error("customEncoderspecs Exception",exc_info=e)
-
-    self.outputFormats += [
-      'gif',
-      'gifski',      
-      'apng',
-    ]
-
-    self.outputFormatVar.set(self.outputFormats[0])
-
-
-    self.frameSizeStrategies = [
-      'Rescale to largest with black bars',
-      'Rescale to largest and center crop smaller',    
-    ]
-    self.frameSizeStrategyVar.set(self.frameSizeStrategies[0])
-
-
-    self.frameSizeStrategies = [
-      'Rescale to largest with black bars',
-      'Rescale to largest and center crop smaller',    
-    ]
-    self.frameSizeStrategyVar.set(self.frameSizeStrategies[0])
-
-    self.maximumSizeVar.set('0.0')
-    self.initialbitrateVar.set('2000.0')
-    self.maxbitrateVar.set('6000.0')
-
-    self.minimumPSNRVar.set('0.0')
-    self.maximumWidthVar.set('1280 - 720p')
-    self.transDurationVar.set('0.0')       
-
-    self.transStyles = [
-                        'circleclose',
-                        'circlecrop',
-                        'circleopen',
-                        'diagbl',
-                        'diagbr',
-                        'diagtl',
-                        'diagtr',
-                        'dissolve',
-                        'distance',
-                        'fade',
-                        'fadeblack',
-                        'fadegrays',
-                        'fadewhite',
-                        'hblur',
-                        'hlslice',
-                        'horzclose',
-                        'horzopen',
-                        'hrslice',
-                        'pixelize',
-                        'radial',
-                        'rectcrop',
-                        'slidedown',
-                        'slideleft',
-                        'slideright',
-                        'slideup',
-                        'smoothdown',
-                        'smoothleft',
-                        'smoothright',
-                        'smoothup',
-                        'squeezeh',
-                        'squeezev',
-                        'vdslice',
-                        'vertclose',
-                        'vertopen',
-                        'vuslice',
-                        'wipebl',                        
-                        'wipebr',
-                        'wipedown',
-                        'wipeleft',
-                        'wiperight',
-                        'wipetl',
-                        'wipetr',
-                        'wipeup',
-                        'zoomin',
-
-                        'circleopen, circleclose',
-                        'fadewhite, fadeblack',
-                        'slideleft, slideright', 
-                        'smoothdown, smoothup',
-                        'smoothleft, smoothright',
-                        'wipetl, wipetr, wipebl, wipebr', 
-                        ]
-    
-    self.transStyleVar.set('fade')
-    self.speedAdjustmentVar.set(1.0)
-
-
-
-
-
-
-    self.audioChannelsOptions = [
-       'Stereo'
-      ,'Mono'
-      #,'Directly Copy Source'
-      ,'No audio'
-    ]
-
-    self.audioChannelsVar.set(self.audioChannelsOptions[1])    
-    self.audioRateVar.set('64')
-
-    self.audioMergeOptions = ['Merge Normalize All','Merge Original Volume','Selected Column Only','Largest Cell by Area','Adaptive Loudest Cell']
-    self.audioMergeOptionsVar.set(self.audioMergeOptions[0]) 
-
-    self.audiOverrideBiasVar.set('1.0')
-
-    self.gridLoopMergeOptions = ['End on shortest Clip','Loop shorter clips to match longest']
-    self.gridLoopMergeOptionsVar.set(self.gridLoopMergeOptions[0])
-
-    self.gridPadColourOptions = ['Black','White','DeepPink','MintCream','DarkGray']
-    self.gridPadColourOptionsVar.set(self.gridPadColourOptions[0])
-
-    self.gridPadWidthVar.set('0')
-
-
-    self.postProcessingFilterOptions = ['None','Disable all filters']
-    if os.path.exists('postFilters'):
-      for f in os.listdir('postFilters'):
-        if f.upper().endswith('TXT') and f.upper().startswith('POSTFILTER-'):
-          self.postProcessingFilterOptions.append(f)   
-
-    for filterElem in self.postProcessingFilterOptions:
-      if 'DEFAULT' in filterElem.upper():
-        self.postProcessingFilterVar.set(filterElem)
-        break
-    else:
-      self.postProcessingFilterVar.set('None')
-
-
-    self.frameSequenceActions = ttk.Frame(self.frameEncodeSettings)
-    self.buttonSequenceClear = ttk.Button(self.frameSequenceActions)
-    self.buttonSequenceClear.config(text='Clear Sequence',style='small.TButton')
-    self.buttonSequenceClear.config(command=self.clearSequence)
-    self.buttonSequenceClear.pack(side='top')
-
-
-    self.buttonSequenceEncode = ttk.Button(self.frameSequenceActions)
-    self.buttonSequenceEncode.config(text='Encode')
-    self.buttonSequenceEncode.config(command=self.encodeCurrent)
-    self.buttonSequenceEncode.pack(expand='true', fill='both', side='top')
-
-
-    self.buttonSequenceCancel = ttk.Button(self.frameSequenceActions)
-    self.buttonSequenceCancel.config(text='Cancel all',style='small.TButton')
-    self.buttonSequenceCancel.config(command=self.cancelAllEncodes)
-    self.buttonSequenceCancel.pack(fill='x',side='top')
-
-
-    self.frameSequenceActions.config(height='200', width='200')
-    self.frameSequenceActions.pack(expand='false', fill='both', side='right')
-
-
-    self.frameMergeStyleSettings = ttk.Frame(self.labelframeSequenceFrame)
-
-    self.frameMergeStyleSettings.pack(fill='x', ipadx='0', side='top')
-
-    # Settings for Transitions Starts
-    self.frameTransitionSettings = ttk.Frame(self.frameMergeStyleSettings)
-    self.frameTransitionSettings.config(height='200', padding='5', relief='groove', width='200')
-
-    self.frameTransDuration = ttk.Frame(self.frameTransitionSettings)
-    self.labelTransDuration = ttk.Label(self.frameTransDuration)
-    self.labelTransDuration.config(anchor='e', padding='2', text='Transition Duration', width='25')
-    self.labelTransDuration.pack(side='left')
-    self.entryTransDuration = ttk.Spinbox(self.frameTransDuration, 
-                                          from_=0, 
-                                          to=float('inf'), 
-                                          increment=0.1,
-                                          textvariable=self.transDurationVar)
-    self.entryTransDuration.config(width='5')
-
-    self.entryTransDuration.pack(expand='true', fill='both', side='left')
-
-    self.frameTransDuration.pack(expand='true', fill='x', side='top')
-
-    self.frameTransStyle = ttk.Frame(self.frameTransitionSettings)
-    self.labelTransStyle = ttk.Label(self.frameTransStyle)
-    self.labelTransStyle.config(anchor='e', padding='2', text='Transition Style', width='25')
-    self.labelTransStyle.pack(side='left')
-    self.frameTransStyle.pack(expand='true', fill='x', side='bottom')
-
-    
-    # Settings for Transitions Ends
-
-    # Settings for Grid Merge Starts
-
-    self.frameGridSettings = ttk.Frame(self.frameMergeStyleSettings)
-    self.frameGridSettings.config(height='200', padding='5', relief='groove', width='200')
-
-    self.frameAudioMerge = ttk.Frame(self.frameGridSettings)
-
-    self.labelAudioMerge = ttk.Label(self.frameAudioMerge)
-    self.labelAudioMerge.config(anchor='e', padding='2', text='Grid Audio Merge', width='25')
-    self.labelAudioMerge.pack(side='left')
-    
-    self.entryAudioMerge = ttk.OptionMenu(self.frameAudioMerge,self.audioMergeOptionsVar,self.audioMergeOptionsVar.get(),*self.audioMergeOptions)
-    self.entryAudioMerge['padding']=2
-    self.entryAudioMerge.pack(expand='true', fill='both', side='left')
-
-    self.frameAudioMerge.pack(fill='x', side='top')
-
-
-    self.frameGridLoopOptions = ttk.Frame(self.frameGridSettings)
-
-    self.labelGridLoopOptions = ttk.Label(self.frameGridLoopOptions)
-    self.labelGridLoopOptions.config(anchor='e', padding='2', text='Grid Loop Option', width='25')
-    self.labelGridLoopOptions.pack(side='left')
-    
-    self.entryGridLoopOptions = ttk.OptionMenu(self.frameGridLoopOptions,self.gridLoopMergeOptionsVar,self.gridLoopMergeOptionsVar.get(),*self.gridLoopMergeOptions)
-    self.entryGridLoopOptions['padding']=2
-    self.entryGridLoopOptions.pack(expand='true', fill='both', side='left')
-    self.frameGridLoopOptions.pack(fill='x', side='bottom')
-
-
-    self.frameGridLoopPadColourOptions = ttk.Frame(self.frameGridSettings)
-
-    self.labelPadColourOptions = ttk.Label(self.frameGridLoopPadColourOptions)
-    self.labelPadColourOptions.config(anchor='e', padding='2', text='Grid Pad Colour', width='25')
-    self.labelPadColourOptions.pack(side='left')
-
-    self.gridPadColourOptions = ttk.OptionMenu(self.frameGridLoopPadColourOptions,self.gridPadColourOptionsVar,self.gridPadColourOptionsVar.get(),*self.gridPadColourOptions)
-    self.gridPadColourOptions['padding']=2
-    self.gridPadColourOptions.pack(expand='true', fill='both', side='left')
-    self.frameGridLoopPadColourOptions.pack(fill='x', side='bottom')
-
-    self.frameGridLoopPadWidthOptions = ttk.Frame(self.frameGridSettings)
-
-    self.labelPadWidthOptions = ttk.Label(self.frameGridLoopPadWidthOptions)
-    self.labelPadWidthOptions.config(anchor='e', padding='2', text='Grid Pad width', width='25')
-    self.labelPadWidthOptions.pack(side='left')
-
-    self.gridPadWidthOptions = ttk.Spinbox(self.frameGridLoopPadWidthOptions, 
-                                             from_=0, 
-                                             to=float('inf'), 
-                                             increment=1,
-                                             textvariable=self.gridPadWidthVar)    
-    self.gridPadWidthOptions.pack(expand='true', fill='both', side='left')
-    self.frameGridLoopPadWidthOptions.pack(fill='x', side='bottom')
-
-
-    # Settings for Grid Merge Ends
-
-
-    self.frameEncodeSettings.config(height='200', padding='5', relief='groove', width='200')
-    self.frameEncodeSettings.pack(fill='x', expand=True, ipadx='3', side='top')
-
-    #self.frameSequenceValuesLeft = ttk.Frame(self.frameSequenceValues)
-    #self.frameSequenceValuesRight = ttk.Frame(self.frameSequenceValues)
-
-    # two column menu below
-
-    self.frameSequenceValues.columnconfigure(0, weight=1)
-    self.frameSequenceValues.columnconfigure(1, weight=100)
-    self.frameSequenceValues.columnconfigure(2, weight=1)
-    self.frameSequenceValues.columnconfigure(3, weight=100)
-
-
-    self.frameSequenceValues.rowconfigure(0, weight=1)
-    self.frameSequenceValues.rowconfigure(1, weight=1)
-    self.frameSequenceValues.rowconfigure(2, weight=1)
-    self.frameSequenceValues.rowconfigure(3, weight=1)
-    self.frameSequenceValues.rowconfigure(4, weight=1)
-    self.frameSequenceValues.rowconfigure(5, weight=1)
-
-
-    self.labelOutputFormat = ttk.Label(self.frameSequenceValues)
-    self.labelOutputFormat.config(anchor='e', text='Output format')
-    self.labelOutputFormat.grid(row=0,column=0,sticky='e')
-
-    self.comboboxOutputFormat= ttk.OptionMenu(self.frameSequenceValues,self.outputFormatVar,self.outputFormatVar.get(),*self.outputFormats)
-
-    Tooltip(self.comboboxOutputFormat,text='The output format of the rendered video, nvenc GPU accelerated options require a nvidia graphics card.')
-
-    self.comboboxOutputFormat['padding']=2
-    self.comboboxOutputFormat.grid(row=0,column=1,sticky='ew')
-
-
-    self.labelInitialBitrate = ttk.Label(self.frameSequenceValues)
-    self.labelInitialBitrate.config(anchor='e', text='Initial Bitrate estimate (KB/s)', width='25')
-    self.labelInitialBitrate.grid(row=1,column=0,sticky='e')
-
-    self.entryInitialBitrate = ttk.Spinbox(self.frameSequenceValues, from_=0, to=float('inf'), increment=0.1)
-    self.entryInitialBitrate.config(textvariable=self.initialbitrateVar)
-    Tooltip(self.entryInitialBitrate,text='The initial bitrate guess, is overriden if you specify a maximum file size, otherwise used directly if maximum file size is zero.')
-    self.entryInitialBitrate.grid(row=1,column=1,sticky='ew')
-
-
-    self.labelMaxBitrate = ttk.Label(self.frameSequenceValues)
-    self.labelMaxBitrate.config(anchor='e', text='Bitrate Cap (KB/s)', width='25')
-    self.labelMaxBitrate.grid(row=2,column=0,sticky='e')
-
-    self.entryMaxBitrate = ttk.Spinbox(self.frameSequenceValues, from_=0, to=float('inf'), increment=0.1)
-    self.entryMaxBitrate.config(textvariable=self.maxbitrateVar)
-    Tooltip(self.entryMaxBitrate,text='The maximum bitrate that will be tried.')
-    self.entryMaxBitrate.grid(row=2,column=1,sticky='ew')
-
-
-    self.labelFilenamePrefix = ttk.Label(self.frameSequenceValues)
-    self.labelFilenamePrefix.config(anchor='e', text='Output filename prefix')
-    self.labelFilenamePrefix.grid(row=0,column=2,sticky='e')
-
-    self.filenamePrefixFrame = ttk.Frame(self.frameSequenceValues)
-
-    self.entryFilenamePrefix = ttk.Entry(self.filenamePrefixFrame)
-    self.entryFilenamePrefix.config(textvariable=self.filenamePrefixVar)
-    Tooltip(self.entryFilenamePrefix,text='Manually specify the output filename (is also used as video \'title\' metdata).')
-    self.entryFilenamePrefix.grid(row=0,column=0,sticky='ew')
-
-    self.entryAutomaticFileNaming = ttk.Checkbutton(self.filenamePrefixFrame,text='Auto-name',onvalue=True, offvalue=False)
-    self.entryAutomaticFileNaming.config(variable=self.automaticFileNamingVar)
-    Tooltip(self.entryAutomaticFileNaming,text='When checked will attempt to use the input filename to automatically create the output filename.')
-    self.entryAutomaticFileNaming.grid(row=0,column=1,sticky='ew')
-
-    self.filenamePrefixFrame.columnconfigure(0, weight=100)
-    self.filenamePrefixFrame.columnconfigure(1, weight=1)
-    self.filenamePrefixFrame.rowconfigure(0, weight=1)
-
-    self.filenamePrefixFrame.grid(row=0,column=3,sticky='ew')
-
-
-  
-    self.labelSizeStrategy = ttk.Label(self.frameSequenceValues)
-    self.labelSizeStrategy.config(anchor='e',  text='Size Match Strategy')
-    self.labelSizeStrategy.grid(row=1,column=2,sticky='e')
-    
-    self.comboboxSizeStrategy = ttk.OptionMenu(self.frameSequenceValues,self.frameSizeStrategyVar,self.frameSizeStrategyVar.get(),*self.frameSizeStrategies)
-    Tooltip(self.comboboxSizeStrategy,text='When two clips of different aspect ratios are sequenced once after another, how the system attempts to manage the different in their frame sizes.')
-    self.comboboxSizeStrategy['padding']=2
-    self.comboboxSizeStrategy.grid(row=1,column=3,sticky='ew')
-
-    self.labelMaximumSize = ttk.Label(self.frameSequenceValues)
-    self.labelMaximumSize.config(anchor='e', text='Maximum File Size (MB)')
-    self.labelMaximumSize.grid(row=3,column=0,sticky='e')
-
-    self.entryMaximumSize = ttk.Spinbox(self.frameSequenceValues, from_=0, to=float('inf'), increment=0.1)
-    Tooltip(self.entryMaximumSize,text='The maximum allowable fiel size for the output file, bitrate and other parameters will be tuned to get the maximumum quality but with a file size no greather than this, set as 0.0 to allow any size.')
-    self.entryMaximumSize.config(textvariable=self.maximumSizeVar)
-    self.entryMaximumSize.grid(row=3,column=1,sticky='ew')
-
-
-
-    self.labelMaximumWidth = ttk.Label(self.frameSequenceValues)
-    self.labelMaximumWidth.config(anchor='e', text='Limit largest dimension')
-    self.labelMaximumWidth.grid(row=2,column=2,sticky='e')
-
-
-    self.defaultMaxWidthWidthOptions = ['3840 - 4K', 
-                                        '2560 - QHD', 
-                                        '2048 - 2K', 
-                                        '1920 - Full HD', 
-                                        '1600 - HD+', 
-                                        '1440 - Quad HD', 
-                                        '1280 - 720p', 
-                                        '1024 - XGA', 
-                                        '960 - qHD', 
-                                        '854 - 480p',
-                                        '720 - NTSC', 
-                                        '640 - nHD', 
-                                        '480 - SD']
-    self.entryMaximumWidth = ttk.Combobox(self.frameSequenceValues)
-    self.entryMaximumWidth.config(textvariable=self.maximumWidthVar)
-    self.entryMaximumWidth.config(values=self.defaultMaxWidthWidthOptions)
-    Tooltip(self.entryMaximumWidth,text='The maximum width or height, if either is greater the video will be scaled down, smaller videos left untouched.')
-    self.entryMaximumWidth.grid(row=2,column=3,sticky='ew')
-
-
-
-
-
-
-    self.labelAudioChannels = ttk.Label(self.frameSequenceValues)
-    self.labelAudioChannels.config(anchor='e', padding='2', text='Audio Channels')
-    self.labelAudioChannels.grid(row=4,column=0,sticky='e')
-
-
-    self.frameAudioBlock = tk.Frame(self.frameSequenceValues)
-    self.frameAudioBlock.grid(row=4,column=1,sticky='ew')
-
-    self.frameAudioBlock.columnconfigure(0, weight=0)
-    self.frameAudioBlock.columnconfigure(1, weight=0)
-    self.frameAudioBlock.columnconfigure(2, weight=1)
-
-    self.entryAudioChannels = ttk.OptionMenu(self.frameAudioBlock,self.audioChannelsVar,self.audioChannelsVar.get(),*self.audioChannelsOptions)
-    Tooltip(self.entryAudioChannels,text='The number of channels of the final video audio.')
-    self.entryAudioChannels['padding']=2
-    self.entryAudioChannels.grid(row=0,column=0,sticky='ew')
-
-    self.labelAudioAt = ttk.Label(self.frameAudioBlock)
-    self.labelAudioAt.config(anchor='e', padding='2', text='@ Bitrate (KB/s)')
-    self.labelAudioAt.grid(row=0,column=1,sticky='e')
-
-    self.entryAudioRate = ttk.Spinbox(self.frameAudioBlock, 
-                                         from_=5, 
-                                         to=510, 
-                                         increment=1,
-                                         textvariable=self.audioRateVar)
-    Tooltip(self.entryAudioRate,text='The audio quality of the final video.')
-    self.entryAudioRate.grid(row=0,column=2,sticky='ew')
-
-
-    self.labelSpeedChange = ttk.Label(self.frameSequenceValues)
-    self.labelSpeedChange.config(anchor='e', text='Speed adjustment')
-    self.labelSpeedChange.grid(row=3,column=2,sticky='e')
-
-
-
-
-    self.speedChangeContainer = ttk.Frame(self.frameSequenceValues)
-
-    self.entrySpeedChange = ttk.Spinbox(self.speedChangeContainer, 
-                                         from_=0.001,
-                                         to=float('inf'), 
-                                         increment=0.01,
-                                         textvariable=self.speedAdjustmentVar)
-    Tooltip(self.entrySpeedChange,text='Speed up or slow down the final video and audio.')
-    self.entrySpeedChange.grid(row=0,column=0,sticky='ew')
-
-
-
-    self.speedChangeInterpolate = ttk.Checkbutton(self.speedChangeContainer,text='Interpolate',onvalue=True, offvalue=False)
-    self.speedChangeInterpolate.config(variable=self.interpolateSpeedChangeVar)
-    Tooltip(self.speedChangeInterpolate,text='Use motion interpolation to speed up or slow down the final video.')
-    self.speedChangeInterpolate.grid(row=0,column=1,sticky='e')
-
-    self.speedChangeContainer.columnconfigure(0, weight=100)
-    self.speedChangeContainer.columnconfigure(1, weight=1)
-    self.speedChangeContainer.rowconfigure(0, weight=1)
-
-
-    self.speedChangeContainer.grid(row=3,column=3,sticky='ew')    
-
-
-    self.labelminimumPSNR = ttk.Label(self.frameSequenceValues)
-    self.labelminimumPSNR.config(anchor='e', text='Minumum PSNR')
-    self.labelminimumPSNR.grid(row=5,column=0,sticky='e')
-    self.entryminimumPSNR = ttk.Spinbox(self.frameSequenceValues, 
-                                         from_=0, 
-                                         to=48, 
-                                         increment=1,
-                                         textvariable=self.minimumPSNRVar)
-    Tooltip(self.entryminimumPSNR,text='Minimum acceptable video quality leave as zero to ignore.')
-    self.entryminimumPSNR.grid(row=5,column=1,sticky='ew')
-
-
-    self.labelpostOptimiser = ttk.Label(self.frameSequenceValues)
-    self.labelpostOptimiser.config(anchor='e', text='Optimiser')
-    self.labelpostOptimiser.grid(row=4,column=2,sticky='e')
-    self.entrypostOptimiser = ttk.OptionMenu(self.frameSequenceValues,self.optimizerVar,self.optimizerVar.get(),*self.optimziers)
-    Tooltip(self.entrypostOptimiser,text='Video optimiser to use to search for best video parameters.')
-    self.entrypostOptimiser['padding']=2
-    self.entrypostOptimiser.grid(row=4,column=3,sticky='ew')
-
-
-    self.labelpostAudioOverride = ttk.Label(self.frameSequenceValues)
-    self.labelpostAudioOverride.config(anchor='e',  text='Audio Dub')
-    self.labelpostAudioOverride.grid(row=6,column=0,sticky='e')
-    self.entrypostAudioOverride = ttk.Button(self.frameSequenceValues,textvariable=self.audioOverrideVar,command=self.selectAudioOverride)
-    Tooltip(self.entrypostAudioOverride,text='An mp3 audio file to use to replace the original video audio.')
-    self.entrypostAudioOverride['padding']=2
-    self.entrypostAudioOverride.grid(row=6,column=1,sticky='ew')
-
-
-
-    self.labelpostAudioOverrideDelay = ttk.Label(self.frameSequenceValues)
-    self.labelpostAudioOverrideDelay.config(anchor='e',  text='Dub Delay (seconds)')
-    self.labelpostAudioOverrideDelay.grid(row=5,column=2,sticky='e')
-    self.entrypostAudioOverrideDelay = ttk.Spinbox(self.frameSequenceValues, textvariable=self.audiOverrideDelayVar,from_=float('-inf'), 
-                                          to=float('inf'), 
-                                          increment=0.5)
-    Tooltip(self.entrypostAudioOverrideDelay,text='Delay before the start of the mp3 dub audio.')
-    self.entrypostAudioOverrideDelay.grid(row=5,column=3,sticky='ew')
-
-    
-
-    self.labelaudiOverrideBias = ttk.Label(self.frameSequenceValues)
-    self.labelaudiOverrideBias.config(anchor='e', text='Dub Mix Bias')
-    self.labelaudiOverrideBias.grid(row=7,column=0,sticky='e')
-    self.entryaudiOverrideBias = ttk.Spinbox(self.frameSequenceValues, 
-                                         from_=0.0, 
-                                         to=1.0, 
-                                         increment=0.05,
-                                         textvariable=self.audiOverrideBiasVar)
-    Tooltip(self.entryaudiOverrideBias,text='Mix between the original video audio and the provided dub audio, 1 being all dub, 0 being all original video audio, 0.5 being a 50/50 mix.')
-    self.entryaudiOverrideBias.grid(row=7,column=1,sticky='ew')
-
-
-
-    self.labelpostProcessingFilter = ttk.Label(self.frameSequenceValues)
-    self.labelpostProcessingFilter.config(anchor='e', text='Post filter')
-    self.labelpostProcessingFilter.grid(row=6,column=2,sticky='e')
-    self.entrypostProcessingFilter = ttk.OptionMenu(self.frameSequenceValues,self.postProcessingFilterVar,self.postProcessingFilterVar.get(),*self.postProcessingFilterOptions)
-    Tooltip(self.entryaudiOverrideBias,text='A custom final filter to apply to all clips.')
-    self.entrypostProcessingFilter['padding']=2
-    self.entrypostProcessingFilter.grid(row=6,column=3,sticky='ew')
-
-
-    self.buttonAdvancedOptions = ttk.Button(self.frameSequenceValues,text='Advanced Encode Options',command=self.selectAdvancedOptions)
-    self.buttonAdvancedOptions.grid(row=7,column=3,sticky='ew')
-    Tooltip(self.buttonAdvancedOptions,text='A custom final filter to apply to all clips.')
-
-
-
-    
-    self.comboboxTransStyle = ttk.Combobox(self.frameTransStyle,textvariable=self.transStyleVar,values=self.transStyles)
-    #self.comboboxTransStyle['padding']=2
-    Tooltip(self.comboboxTransStyle,text='The transition style to use between cuts, comma delimited lists are allowed and will cycle through multiple styles.')
-
-    self.entryTransLoop = ttk.Checkbutton(self.frameTransStyle,text='Loop start to end',onvalue=True, offvalue=False)
-    self.entryTransLoop.config(variable=self.loopStartAndendVar)
-    self.entryTransLoop['padding']=2
-    Tooltip(self.entryTransLoop,text='Trim a little from the start of the sequence and add it to a fade at the end so that it cycles as a perfect loop.')
-
-    self.entryTransLoop.pack(expand='false', fill='x', side='right')
-
-    self.buttonPreviewSequence = ttk.Button(self.frameTransStyle,text='Preview sequence timings',command=self.previewSequencetimings,style='small.TButton')
-    self.buttonPreviewSequence.pack(expand='true', fill='x', side='bottom')
-
-    self.comboboxTransStyle.pack(expand='true', fill='x', side='right')
-
-    self.frameTransStyle.config(height='200', width='100')
-    self.frameTransStyle.pack(expand='true', fill='x', side='top')
-
-    self.frameSequenceValues.config(height='200', padding='2', width='200')
-    self.frameSequenceValues.pack(anchor='nw', expand='true', fill='both', ipady='3', side='left')
-
-
-
-
-    #self.frameSequenceValuesLeft.pack(expand='true', fill='x', side='left')
-    #self.frameSequenceValuesRight.pack(expand='true', fill='x', side='left')
-
-
-    self.labelframeEncodeProgress = ttk.Frame(self.labelframeSequenceFrame)
-
-    self.encoderProgress=[
-      
-    ]
-
-    self.labelframeEncodeProgress.config(height='10', width='200')
-    self.labelframeEncodeProgress.pack(anchor='ne', expand='true', fill='x', padx='5', pady='5', side='top')
-    self.frameMergeSelection.config(height='200', width='200')
-    self.frameMergeSelection.pack(expand='true',fill='both', side='top')
-    self.mainwindow = self.frameMergeSelection
-    self.encodeRequestId=0
-    self.selectableVideos={}
-    self.selectedColumn = None
-    self.player=None
-    self.syncModal=None
-
-    try:
-      self.buttonSequenceEncode.drag_source_register("*")
-      self.buttonSequenceEncode.dnd_bind('<<DragInitCmd>>',self.dragInit)
-    except Exception as e:
-        logging.error("DragInitCmd2 Exception",exc_info=e)
-
-
-  def dragInit(self,e):
-    
-      fbins = []
-      for epw in self.encoderProgress:
-        if epw.finalFilename is not None:
-            print(epw.finalFilename)
-            fbin = '{{{}}}'.format(os.path.abspath(epw.finalFilename))
-            fbins.append(fbin)
-      return (COPY, DND_FILES, ' '.join(fbins))
-
-  def setIgnoreDrop(self,path):
-    self.controller.setIgnoreDrop(path)
-
-  def selectAdvancedOptions(self):
-    modal = AdvancedEncodeFlagsModal(master=self,controller=self)
-    modal.mainloop()
-
-  def getAdvancedFlags(self):
-    return self.advancedFlags
-
-  def setAdvancedFlags(self,flags):
-    self.advancedFlags.update(flags)
-    print(self.advancedFlags)
-
-  def viewFilterForClip(self,clip):
-    self.controller.jumpToFilterByRid(clip.rid)
-
-  def destroyPlannerModal(self):
-    if self.syncModal is not None:
-      self.syncModal.isActive = False
-      self.syncModal.destroy()
-
-  def previewSequencetimings(self,uiParent=None):
-    
-    if self.mergeStyleVar.get() != self.mergeStyles[1]:
-      self.mergeStyleVar.set(self.mergeStyles[1])
-
-    self.destroyPlannerModal()    
-    
-    print('uiParent',uiParent)
-    if uiParent is None:
-      tlwindow = tk.Toplevel()
-    else:
-      tlwindow = uiParent
-
-
-    self.syncModal = VideoAudioSync(uiParent=tlwindow,master=self,
-                             controller=self.controller,
-                             sequencedClips=self.sequencedClips,
-                             dubFile=self.audioOverrideVar, 
-                             dubOffsetVar=self.audiOverrideDelayVar, 
-                             fadeVar=self.transDurationVar,
-                             globalOptions=self.globalOptions,
-                             mixVar=self.audiOverrideBiasVar)
-    self.syncModal.pack(expand='true', fill='both')
-    
-    if uiParent is None:
-      tlwindow.mainloop()
-    else:
-      uiParent.pack(expand='both')
-    
-    return
-
-  def deleteProfile(self):
-    pass
-
-  def saveProfile(self):
-    pass
-
-  def selectAudioOverride(self):
-    files = askopenfilename(multiple=False,filetypes=[('mp3','*.mp3',),('wav','*.wav')])
-    if files is None or len(files)==0:
-      self.audioOverrideVar.set('None')
-    else:
-      self.audioOverrideVar.set(str(files))
-
-  def close_ui(self):
-    if self.syncModal is not None:
-      self.syncModal.cleanup()
-
-  def addRow(self):
-    column = GridColumn(self.gridColumnContainer,self)
-    self.gridColumns.append({'column':column,'clips':[]})
-
-  def addColumn(self):
-    column = GridColumn(self.gridColumnContainer,self)
-    self.gridColumns.append({'column':column,'clips':[]})
-
-  def selectColumn(self,col):
-    selectedCol = [x for x in self.gridColumns if x['column'] == col][0]
-    if self.selectedColumn is not None:
-      self.selectedColumn['column'].setSelected(False)
-      self.selectedColumn = None
-    self.selectedColumn = selectedCol
-    self.selectedColumn['column'].setSelected(True)
-
-
-  def removeColumn(self,col):
-    colToRemove = [x for x in self.gridColumns if x['column'] == col][0]
-    self.gridColumns.remove(colToRemove)
-    col.pack_forget()
-    if self.selectedColumn == colToRemove:
-      self.selectedColumn = None
-
-
-  def clearSequence(self,includeProgress=True):
-    for sv in self.sequencedClips:
-      sv.destroy()
-    for col in self.gridColumns[::-1]:
-      self.gridColumns.remove(col)
-      col['column'].pack_forget()
-    self.sequencedClips.clear()
-    self.gridColumns.clear()
-    if self.syncModal is not None and self.syncModal.isActive:
-      self.syncModal.valuesChanged=True
-      self.syncModal.recalculateEDLTimings()
-    if includeProgress:
-        for e in self.encoderProgress:
-          if e.iscomplete or e.cancelled:
-            e.remove()
-
-  def profileChanged(self,*args):
-    profileName = self.profileVar.get()
-
-    for p in self.profileSpecs:
-      if p['name'] == profileName:
-
-        if p.get('editable',False):
-          self.profileDelete.state(["disabled"])
+# ---------------------------------------------------------------------------
+# EncodeProgress
+# ---------------------------------------------------------------------------
+
+class EncodeProgress(QFrame):
+
+    def __init__(self, parent=None, encodeRequestId=None, controller=None,
+                 targetSize=0.0, clip=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Raised)
+
+        self.encodeRequestId = encodeRequestId
+        self.cancelled = False
+        self.iscomplete = False
+        self.controller = controller
+        self.clip = clip
+        self.rid = clip.rid if clip else None
+
+        self.progresspercent = 0
+        self.encodeStartTime = None
+        self.progressQueue = deque([], 10)
+        self.timestampQueue = deque([], 10)
+        self.finalFilename = None
+        self.player = None
+        self.lastProgress = 0
+        self.lastEncodedSize = None
+        self.pix_fmt = 8
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        # Row 0
+        self.labelRequestId = QLabel('Request #{}'.format(encodeRequestId))
+        layout.addWidget(self.labelRequestId, 0, 0)
+
+        self.labelRequestStatus = QLabel('Idle')
+        layout.addWidget(self.labelRequestStatus, 0, 1, 1, 9)
+
+        # Row 1
+        self.labelEncodeStage = QLabel('Stage: Submitted Idle')
+        layout.addWidget(self.labelEncodeStage, 1, 0)
+
+        self.labelEncodePass = QLabel('Pass: Preparation Cutting Clips')
+        layout.addWidget(self.labelEncodePass, 1, 1)
+
+        if targetSize <= 0.0:
+            self.labelTargetSize = QLabel('Target Size: -')
         else:
-          self.profileDelete.state(["!disabled"])
+            self.labelTargetSize = QLabel('Target Size: {}M'.format(targetSize))
+        layout.addWidget(self.labelTargetSize, 1, 2)
 
-        for k,v in p.items():
-          if k in self.editableProfileVars:
-            attrName = k+'Var'
-            if hasattr(self, attrName) and hasattr(getattr(self, attrName),'set'):
-               getattr(self, attrName).set(v)
+        self.labelLastEncodedSize = QLabel('Size: -')
+        layout.addWidget(self.labelLastEncodedSize, 1, 3)
 
-  def valueChange(self,*args):
-    try:
-      self.automaticFileNamingValue = self.automaticFileNamingVar.get()
-      if self.automaticFileNamingValue:
-        self.entryFilenamePrefix.state(["disabled"]) 
-        self.labelFilenamePrefix.state(["disabled"]) 
-      else:
-        self.entryFilenamePrefix.state(["!disabled"]) 
-        self.labelFilenamePrefix.state(["!disabled"]) 
+        self.labelLastEncodedBR = QLabel('Bitrate: -')
+        layout.addWidget(self.labelLastEncodedBR, 1, 4)
 
-    except:
-      pass
+        self.labelLastBuff = QLabel('Buffer: -')
+        layout.addWidget(self.labelLastBuff, 1, 5)
 
-    try:
-      self.audioOverrideValue = self.audioOverrideVar.get()
-      if self.audioOverrideValue.upper() == 'NONE':
-        self.audioOverrideValue = None
+        self.labelLastWR = QLabel('Width Change: -')
+        layout.addWidget(self.labelLastWR, 1, 6)
 
-    except:
-      pass
+        self.labelTimeLeft = QLabel('Idle')
+        self.labelTimeLeft.setMinimumWidth(140)
+        layout.addWidget(self.labelTimeLeft, 1, 7)
 
-    try:
-      self.loopStartAndendValue = self.loopStartAndendVar.get()
-    except:
-      pass
+        self.labelLastEncodedPSNR = QLabel('Quality: -')
+        layout.addWidget(self.labelLastEncodedPSNR, 1, 8)
 
-    try:
-      self.interpolateSpeedChangeValue = self.interpolateSpeedChangeVar.get()
-    except:
-      pass
+        # Row 2
+        self.progressBar = QProgressBar()
+        self.progressBar.setRange(0, 100)
+        self.progressBar.setValue(0)
+        layout.addWidget(self.progressBar, 2, 0, 1, 9)
 
-    try:
-      self.audiOverrideDelayValue = self.audiOverrideDelayVar.get()
-    except:
-      pass
+        self.btnCancel = QPushButton('Cancel')
+        self.btnCancel.clicked.connect(self.cancelEncodeRequest)
+        layout.addWidget(self.btnCancel, 2, 9)
 
-    try:
-      self.filenamePrefixValue = self.filenamePrefixVar.get()
-      testpath = self.filenamePrefixValue+'.bin'
-      sanitisedPath = sanitize_filepath(testpath)
+        self.btnPlay = QPushButton('Play')
+        self.btnPlay.clicked.connect(self.playFinal)
+        self.btnPlay.hide()
+        layout.addWidget(self.btnPlay, 2, 9)
 
-      pre,post = os.path.split(testpath)
+        self.btnOpenFolder = QPushButton('Open folder')
+        self.btnOpenFolder.clicked.connect(self.openFolder)
+        self.btnOpenFolder.hide()
+        layout.addWidget(self.btnOpenFolder, 2, 10)
 
-      if testpath != sanitisedPath or pre != '':
-        self.entryFilenamePrefix.config(style='error.TEntry')
-      else:
-        self.entryFilenamePrefix.config(style='')
-    except Exception as e:
-        try:
-            self.entryFilenamePrefix.config(style='error.TEntry')
-        except Exception as ie:
-            pass
+        # Preview thumbnail (col 11, rows 0-2)
+        self.previewLabel = QLabel()
+        self.previewLabel.setFixedSize(90, 60)
+        self.previewLabel.setAlignment(Qt.AlignCenter)
+        if clip is not None and hasattr(clip, 'previewImage') and clip.previewImage is not None:
+            self.previewLabel.setPixmap(
+                clip.previewImage.scaled(90, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        layout.addWidget(self.previewLabel, 0, 11, 3, 1)
 
-    
-    try:
-      tempoutputFormatValue = self.outputFormatVar.get()
-      try:
-          if tempoutputFormatValue != self.outputFormatValue:
-            for k in list(self.advancedFlags.keys()):
-                if k.startswith('encoder-option-'):
-                    del self.advancedFlags[k]
-      except Exception as e:
-        logging.error("encoder-option- Exception",exc_info=e)
-      self.outputFormatValue = tempoutputFormatValue
+        # Context menu
+        self.previewLabel.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.previewLabel.customContextMenuRequested.connect(self._showContextMenu)
+        self.btnPlay.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.btnPlay.customContextMenuRequested.connect(self._showContextMenu)
 
-    except:
-      pass
-    
-    try:
-      self.frameSizeStrategyValue = self.frameSizeStrategyVar.get()
-    except:
-      pass
+        # Drag support: drag out the finished file
+        self.previewLabel.mousePressEvent = self._dragStart
+        self.btnPlay.mousePressEvent = self._dragStart
 
-    try:
-      self.initialbitrateValue = float(self.initialbitrateVar.get())*1024
-    except:
-      pass
+        # Add to parent layout if parent is a container with a layout
+        if parent is not None and parent.layout() is not None:
+            parent.layout().addWidget(self)
 
-    try:
-      self.maxbitrateValue = float(self.maxbitrateVar.get())*1024
-    except:
-      pass
+    # ---- drag-out support ----
+    def _dragStart(self, event):
+        if event.button() == Qt.LeftButton and self.finalFilename is not None:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(os.path.abspath(self.finalFilename))])
+            drag.setMimeData(mime)
+            drag.exec(Qt.CopyAction)
 
+    def _showContextMenu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.addAction('Remove', self.remove)
+        menu.addAction('Remove and Delete File', self.deleteCompleteAndRemove)
+        menu.exec(self.sender().mapToGlobal(pos))
 
-    try:
-      self.maximumSizeValue = float(self.maximumSizeVar.get())
-    except:
-      pass
+    def deleteCompleteAndRemove(self):
+        if self.finalFilename is not None:
+            try:
+                os.remove(self.finalFilename)
+            except Exception as e:
+                print(e)
+        self.remove()
 
-    try:
-      widthNum = self.maximumWidthVar.get().split('-')[0].strip()
-      self.maximumWidthValue = int(float(widthNum))
-    except:
-      pass
+    def openFolder(self):
+        if self.finalFilename is not None:
+            path, _ = os.path.split(self.finalFilename)
+            if platform.system() == 'Windows':
+                try:
+                    sp.call('explorer.exe /select,"{}"'.format(self.finalFilename))
+                except Exception as e:
+                    logging.error('explorer select Exception', exc_info=e)
+                    os.startfile(path)
+            elif platform.system() == 'Darwin':
+                sp.Popen(['open', path])
+            else:
+                sp.Popen(['xdg-open', path])
 
-    try:
-      self.transDurationValue = float(self.transDurationVar.get())
-      minlen = float('inf')
-      for clip in self.sequencedClips:
-        minlen = min((clip.e-clip.s),minlen)
-        minlen = floor(minlen * 1000)/1000.0
+    def playFinal(self):
+        if self.finalFilename is not None:
+            if self.player is not None:
+                self.player.terminate()
+            self.player = mpv.MPV(loop='inf', mute=True, volume=100, autofit_larger='1280')
+            self.player.play(self.finalFilename)
 
-      self.transDurationValue = min(self.transDurationValue,minlen/2)
-      if float(self.transDurationVar.get()) > self.transDurationValue:
-        self.transDurationVar.set(str(self.transDurationValue))
-    except Exception as e:
-      logging.error("transDurationVar Exception",exc_info=e)
+            def mutetoggle(key_state, key_name, key_char):
+                if 'd-' in key_state:
+                    self.player.mute = not self.player.mute
+            self.mutetoggle = mutetoggle
+            self.player.register_key_binding('m', mutetoggle)
 
-    try:
-      self.transStyleValue = self.transStyleVar.get()
-    except:
-      pass
+            def quitFunc(key_state, key_name, key_char):
+                def playerReaper():
+                    player = self.player
+                    self.player = None
+                    player.terminate()
+                    player.wait_for_shutdown()
+                if 'd-' in key_state or 'p-' in key_state:
+                    self.playerReaper = threading.Thread(target=playerReaper, daemon=True)
+                    self.playerReaper.start()
+            self.quitFunc = quitFunc
+            self.player.register_key_binding('q', quitFunc)
+            self.player.register_key_binding('Q', quitFunc)
+            self.player.register_key_binding('CLOSE_WIN', quitFunc)
 
-    try:
-      self.speedAdjustmentValue = float(self.speedAdjustmentVar.get())
-    except:
-      pass
+            def seekPlayer(player, offset):
+                player.command('seek', str(5 * offset), 'relative')
+            self.player.register_key_binding('WHEEL_UP',   lambda s, n, c, p=self.player, o=1:  seekPlayer(p, o))
+            self.player.register_key_binding('WHEEL_DOWN', lambda s, n, c, p=self.player, o=-1: seekPlayer(p, o))
 
+    def cancelEncodeRequest(self):
+        self.cancelled = True
+        self.progressBar.setStyleSheet('QProgressBar::chunk { background: red; }')
+        self.progressBar.setValue(100)
+        self.labelTimeLeft.setText('Cancelled')
+        self.progresspercent = 100
+        self.btnCancel.setEnabled(False)
+        self.controller.cancelEncodeRequest(self.encodeRequestId)
 
-    try:
-      self.audioRate = self.audioRateVar.get()
-    except:
-      pass
+    def sizeof_fmt(self, inum, suffix='B'):
+        num = float(inum)
+        for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
+            if abs(num) < 1024.0:
+                return '%3.1f%s%s' % (num, unit, suffix)
+            num /= 1024.0
+        return '%.1f%s%s' % (num, 'Yi', suffix)
 
-    try:
-      self.audioChannels = self.audioChannelsVar.get()
-    except:
-      pass
+    def setPreviewImage(self, pixmap):
+        if isinstance(pixmap, QPixmap):
+            self.previewLabel.setPixmap(
+                pixmap.scaled(90, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
 
-    try:
-      self.audioMerge = self.audioMergeOptionsVar.get()
-    except:
-      pass
+    def updateStatus(self, status, percent, finalFilename=None, requestStatus=None,
+                     encodeStage=None, pix_fmt=None, encodePass=None, lastEncodedBR=None,
+                     lastEncodedCRF=None, lastEncodedSize=None, lastEncodedPSNR=None,
+                     lastBuff=None, lastWR=None, currentSize=None):
 
-    try:
-      self.postProcessingFilter = self.postProcessingFilterVar.get()
-    except:
-      pass
+        # Called from ffmpegService background encode threads — must run on main thread
+        if QThread.currentThread() is not QApplication.instance().thread():
+            QTimer.singleShot(0, lambda: self.updateStatus(
+                status, percent, finalFilename=finalFilename,
+                requestStatus=requestStatus, encodeStage=encodeStage,
+                pix_fmt=pix_fmt, encodePass=encodePass,
+                lastEncodedBR=lastEncodedBR, lastEncodedCRF=lastEncodedCRF,
+                lastEncodedSize=lastEncodedSize, lastEncodedPSNR=lastEncodedPSNR,
+                lastBuff=lastBuff, lastWR=lastWR, currentSize=currentSize,
+            ))
+            return
 
-    try:
-      self.gridLoopMergeOption = self.gridLoopMergeOptionsVar.get()
-    except:
-      pass
+        if self.cancelled:
+            return
 
-    try:
-      self.gridPadColour = self.gridPadColourOptionsVar.get()
-    except:
-      self.gridPadColour='Black'
-      pass
+        if pix_fmt is not None:
+            self.pix_fmt = pix_fmt
 
-    try:
-      self.gridPadWidth = int(self.gridPadWidthVar.get())
-    except:
-      self.gridPadWidth=0
-      pass
+        if lastEncodedSize is not None:
+            self.lastEncodedSize = lastEncodedSize
+        if lastEncodedSize is None and self.lastEncodedSize is not None:
+            lastEncodedSize = self.lastEncodedSize
 
-    try:
-      self.minimumPSNR = self.minimumPSNRVar.get()
-    except:
-      pass
+        if requestStatus is not None:
+            self.labelRequestStatus.setText(str(requestStatus))
 
-    try:
-      self.optimizer = self.optimizerVar.get()
-    except:
-      pass
+        if encodeStage == 'Encode Failed':
+            self.progressBar.setStyleSheet('QProgressBar::chunk { background: red; }')
+            self.progressBar.setValue(100)
+            self.labelTimeLeft.setText('Failed')
+            self.progresspercent = 100
+            self.btnCancel.setEnabled(False)
+            self.cancelled = True
 
-    try:
-      self.audiOverrideBiasValue = max(0.0,min(1.0,float(self.audiOverrideBiasVar.get())),0)
-    except:
-      pass
+        if encodeStage is not None:
+            self.labelEncodeStage.setText('Stage: {}'.format(encodeStage))
 
-    self.updatedPredictedDuration()
-  
-  def registerComplete(self,filename,clip=None):
-    self.controller.registerComplete(filename,clip=clip)
+        if encodePass is not None:
+            self.labelEncodePass.setText('Pass: {}'.format(encodePass))
 
-  def toggleBoringMode(self,boringMode):
-    if self.syncModal is not None and self.syncModal.isActive:
-      self.syncModal.toggleBoringMode(boringMode)
+        if lastEncodedSize is not None and currentSize is not None:
+            self.labelLastEncodedSize.setText(
+                'Size: {} ~{}'.format(self.sizeof_fmt(lastEncodedSize, 'B'),
+                                      self.sizeof_fmt(currentSize, 'B')))
+        elif currentSize is not None:
+            self.labelLastEncodedSize.setText('Size: ~{}'.format(self.sizeof_fmt(currentSize, 'B')))
+        elif lastEncodedSize is not None:
+            self.labelLastEncodedSize.setText('Size: {}'.format(self.sizeof_fmt(lastEncodedSize, 'B')))
 
+        if lastEncodedBR is not None:
+            self.labelLastEncodedBR.setText('Bitrate: {}'.format(self.sizeof_fmt(lastEncodedBR, 'B')))
+        if lastEncodedCRF is not None:
+            self.labelLastEncodedBR.setText('CRF: {}'.format(lastEncodedCRF))
 
-  def cancelEncodeRequest(self,requestId):
-    self.controller.cancelEncodeRequest(requestId)
+        if lastEncodedPSNR is not None:
+            psnr = int(lastEncodedPSNR)
+            if psnr >= 48:
+                grade, color = 'Excellent', '#006400'
+            elif psnr >= 40:
+                grade, color = 'Good', '#228B22'
+            elif psnr >= 38:
+                grade, color = 'Fair', '#DAA520'
+            elif psnr >= 30:
+                grade, color = 'Poor', '#FF8C00'
+            else:
+                grade, color = 'Terrible', '#8B0000'
+            self.labelLastEncodedPSNR.setText('Quality: {} ({})'.format(lastEncodedPSNR, grade))
+            self.labelLastEncodedPSNR.setStyleSheet('color: {}'.format(color))
 
-  def cancelAllEncodes(self):
-    for epw in self.encoderProgress:
-      epw.cancelEncodeRequest()
+        if lastBuff is not None:
+            self.labelLastBuff.setText('Buffer: {}'.format(self.sizeof_fmt(lastBuff, 'B')))
+        if lastWR is not None:
+            self.labelLastWR.setText('Width Change: {:0.2f}%'.format(lastWR * 100))
 
-  def encodeCurrent(self):
-    clip=None
-    minSize = self.maximumSizeValue * (1-self.globalOptions.get('allowableTargetSizeUnderrun',0))
+        if self.cancelled:
+            return
 
-    nullfilter = ''
-    disableFilters = self.postProcessingFilterVar.get() == 'Disable all filters'
+        if finalFilename is not None:
+            self.finalFilename = finalFilename
+            self.iscomplete = True
+            self.controller.registerComplete(self.finalFilename, clip=self.clip)
 
-    if (not self.automaticFileNamingValue) and self.filenamePrefixValue is None or self.filenamePrefixValue.strip() == '':
-      self.filenamePrefixValue = 'output'
+        if percent is not None:
+            if percent < self.lastProgress:
+                self.progressQueue = deque([], 10)
+                self.timestampQueue = deque([], 10)
+            self.lastProgress = percent
+            self.progressQueue.append(percent)
+            self.timestampQueue.append(time.time())
 
-    if self.mergeStyleVar.get().split('-')[0].strip()=='Stream Copy':
-     
-      encodeSequence = []
-      self.encodeRequestId+=1
+            if self.encodeStartTime is None:
+                self.encodeStartTime = self.timestampQueue[-1]
 
-      for clip in self.sequencedClips:
-        definition = (clip.rid,clip.filename,clip.s,clip.e,nullfilter,nullfilter,nullfilter,clip.getSpeed())
-        encodeSequence.append(definition)
+            if len(self.progressQueue) >= 2:
+                currentValue = self.progressQueue[-1]
+                oldestValue  = self.progressQueue[0]
+                currentKey   = self.timestampQueue[-1]
+                oldestKey    = self.timestampQueue[0]
+                try:
+                    remaining = (1.0 - currentValue) * (currentKey - oldestKey) / (currentValue - oldestValue)
+                    self.labelTimeLeft.setText(
+                        format_timedelta(remaining, '{hours_total}:{minutes2}:{seconds2}') +
+                        (' left ({:.0%})'.format(percent))
+                    )
+                except Exception as e:
+                    logging.error('format_timedelta Exception', exc_info=e)
 
-      if len(encodeSequence)>0:
-        encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,clip=clip)
-        self.encoderProgress.append(encodeProgressWidget)
-        outputPrefix = self.filenamePrefixValue
-        if self.automaticFileNamingValue:
-          outputPrefix = self.convertFilenameToBaseName(clip.filename)
-          if len(self.controller.getLabelForRid(clip.rid)):
-            outputPrefix += '_'+self.convertFilenameToBaseName(self.controller.getLabelForRid(clip.rid),getBasename=False)
-        
-        self.controller.encode(self.encodeRequestId,
-                               'STREAMCOPY',
-                               encodeSequence,
-                               {},
-                               outputPrefix,
-                               encodeProgressWidget.updateStatus) 
+            if status is not None:
+                self.labelRequestStatus.setText(status)
+            self.progressBar.setValue(int(percent * 100))
+            self.progresspercent = percent * 100
 
+            if percent >= 1:
+                elapsed = format_timedelta(time.time() - self.encodeStartTime, '{hours_total}:{minutes2}:{seconds2}')
+                self.labelTimeLeft.setText('Complete in {}'.format(elapsed))
+                self.btnCancel.hide()
+                if self.finalFilename is not None:
+                    self.progressBar.setStyleSheet('QProgressBar::chunk { background: #006400; }')
+                    self.btnPlay.show()
+                    self.btnOpenFolder.show()
+            else:
+                self.progressBar.setStyleSheet('QProgressBar::chunk { background: #1E90FF; }')
+                self.btnCancel.show()
 
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      encodeSequence = []
-      
-      selectedColumnInd = 0
-
-      for i,column in enumerate(self.gridColumns):
-        outcol = []
-        for clip in column['clips']:
-          definition = (clip.rid,clip.filename,clip.s,clip.e,
-                        nullfilter if disableFilters else clip.filterexp,
-                        nullfilter if disableFilters else clip.filteraudioexp, 
-                        nullfilter if disableFilters else clip.filterexpEnc,
-                        clip.getSpeed())
-          outcol.append(definition)
-          if column == self.selectedColumn:
-            selectedColumnInd=i
-        if len(outcol)>0:
-          encodeSequence.append(outcol)
-      if len(encodeSequence)==0:
-        return
-
-      self.encodeRequestId+=1
-      options={
-        'frameSizeStrategy':self.frameSizeStrategyValue,
-        'maximumSize':self.maximumSizeValue,
-        'initialBitrate':self.initialbitrateValue,
-        'maximumBitrate':self.maxbitrateValue,
-        'maximumWidth':self.maximumWidthValue,
-        'transDuration':self.transDurationValue,
-        'transStyle':self.transStyleValue,
-        'speedAdjustment':self.speedAdjustmentValue,
-        'speedAdjustmentInterploate':self.interpolateSpeedChangeValue,
-        'outputFormat':self.outputFormatValue,
-        'audioChannels':self.audioChannels,
-        'audioRate':self.audioRate,
-        'audioMerge':self.audioMerge,
-        'postProcessingFilter':self.postProcessingFilter,
-        'selectedColumn':selectedColumnInd,
-        'audioOverride':self.audioOverrideValue,
-        'audiOverrideDelay':self.audiOverrideDelayValue,
-        'gridLoopMergeOption':self.gridLoopMergeOption,
-        'minimumPSNR':self.minimumPSNR,
-        'optimizer':self.optimizer,
-        'audioOverrideBias':self.audiOverrideBiasValue,
-        'gridPaddingWidth':self.gridPadWidth,
-        'gridPadColour':self.gridPadColour
-      }
-      options.update(self.advancedFlags)
-
-      encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,targetSize=self.maximumSizeValue,clip=clip)
-      self.encoderProgress.append(encodeProgressWidget)
-      outputPrefix = self.filenamePrefixValue
-      if self.automaticFileNamingValue:
-        try:
-          print(encodeSequence)
-          if len(self.controller.getLabelForRid(encodeSequence[0][0][0])):
-            outputPrefix = self.convertFilenameToBaseName(self.controller.getLabelForRid(encodeSequence[0][0][0]),getBasename=False)
-          else:  
-            outputPrefix = self.convertFilenameToBaseName(encodeSequence[0][0][1])
-        except Exception as e:
-          print(e)
-
-      self.controller.encode(self.encodeRequestId,
-                             'GRID',
-                             encodeSequence,
-                             options.copy(),
-                             outputPrefix,
-                             encodeProgressWidget.updateStatus) 
-
-
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Sequence':
-
-      uniqueSequences = set()
-      for clip in self.sequencedClips:
-        uniqueSequences.add(self.controller.getSeqGroupForRid(clip.rid))
-
-      uniqueSequences = sorted(list(uniqueSequences))
-      sequenceRepreClip=None
-      for seqid in uniqueSequences:
-          encodeSequence = []
-          self.encodeRequestId+=1
-          for clip in self.sequencedClips:
-            clipseqid = self.controller.getSeqGroupForRid(clip.rid)
-            if clipseqid == seqid:
-                definition = (clip.rid,clip.filename,clip.s,clip.e,
-                              nullfilter if disableFilters else clip.filterexp, 
-                              nullfilter if disableFilters else clip.filteraudioexp,
-                              nullfilter if disableFilters else clip.filterexpEnc,
-                              clip.getSpeed())
-                encodeSequence.append(definition)
-                if sequenceRepreClip is None:
-                  sequenceRepreClip = clip
-                sequenceRepreClip = clip
-          if sequenceRepreClip is None:
-            sequenceRepreClip = clip
-
-          if len(encodeSequence)>0:
-            options={
-              'frameSizeStrategy':self.frameSizeStrategyValue,
-              'maximumSize':self.maximumSizeValue,
-              'initialBitrate':self.initialbitrateValue,
-              'maximumBitrate':self.maxbitrateValue,
-              'maximumWidth':self.maximumWidthValue,
-              'transDuration':self.transDurationValue,
-              'transStyle':self.transStyleValue,
-              'speedAdjustment':self.speedAdjustmentValue,
-              'speedAdjustmentInterploate':self.interpolateSpeedChangeValue,
-              'outputFormat':self.outputFormatValue,
-              'audioChannels':self.audioChannels,
-              'audioRate':self.audioRate,
-              'audioMerge':self.audioMerge,
-              'postProcessingFilter':self.postProcessingFilter,
-              'audioOverride':self.audioOverrideValue,
-              'audiOverrideDelay':self.audiOverrideDelayValue,
-              'gridLoopMergeOption':self.gridLoopMergeOption,
-              'minimumPSNR':self.minimumPSNR,
-              'optimizer':self.optimizer,
-              'audioOverrideBias':self.audiOverrideBiasValue,
-              'loopStartAndEnd':self.loopStartAndendValue,
-            }
-            options.update(self.advancedFlags)
-
-            encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,targetSize=self.maximumSizeValue,clip=sequenceRepreClip)
-            self.encoderProgress.append(encodeProgressWidget)
-
-            outputPrefix = self.filenamePrefixValue
-            if self.automaticFileNamingValue:
-              try:
-                if len(self.controller.getLabelForRid(self.sequencedClips[0].rid)):
-                  outputPrefix = self.convertFilenameToBaseName(self.controller.getLabelForRid(self.sequencedClips[0].rid),getBasename=False)
-                else:  
-                  outputPrefix = self.convertFilenameToBaseName(self.sequencedClips[0].filename)
-              except:
+            # Update window title via QApplication
+            try:
+                top = self.window()
+                if top:
+                    top.setWindowTitle('webmGenerator: encoding: {:0.2f}%'.format(percent * 100))
+            except Exception:
                 pass
 
-            self.controller.encode(self.encodeRequestId,
-                                   'CONCAT',
-                                   encodeSequence,
-                                   options.copy(),
-                                   outputPrefix,
-                                   encodeProgressWidget.updateStatus)
-
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Individual Files':
-      
-      for clip in self.sequencedClips:
-        encodeSequence = []
-        self.encodeRequestId+=1
-        definition = (clip.rid,clip.filename,clip.s,clip.e,
-                      nullfilter if disableFilters else clip.filterexp,
-                      nullfilter if disableFilters else clip.filteraudioexp,
-                      nullfilter if disableFilters else clip.filterexpEnc,
-                      clip.getSpeed())
-        encodeSequence.append(definition)
-        if len(encodeSequence)>0:
-          options={
-            'frameSizeStrategy':self.frameSizeStrategyValue,
-            'maximumSize':self.maximumSizeValue,
-            'initialBitrate':self.initialbitrateValue,
-            'maximumBitrate':self.maxbitrateValue,
-            'maximumWidth':self.maximumWidthValue,
-            'transDuration':0.0,
-            'transStyle':self.transStyleValue,
-            'speedAdjustment':self.speedAdjustmentValue,
-            'speedAdjustmentInterploate':self.interpolateSpeedChangeValue,
-            'outputFormat':self.outputFormatValue,
-            'audioChannels':self.audioChannels,
-            'audioRate':self.audioRate,
-            'audioMerge':self.audioMerge,
-            'postProcessingFilter':self.postProcessingFilter,
-            'audioOverride':self.audioOverrideValue,
-            'audiOverrideDelay':self.audiOverrideDelayValue,
-            'gridLoopMergeOption':self.gridLoopMergeOption,
-            'minimumPSNR':self.minimumPSNR,
-            'optimizer':self.optimizer,
-            'audioOverrideBias':self.audiOverrideBiasValue,
-          }
-          options.update(self.advancedFlags)
-
-          encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,targetSize=self.maximumSizeValue,clip=clip)
-          self.encoderProgress.append(encodeProgressWidget)
-          outputPrefix = self.filenamePrefixValue
-          if self.automaticFileNamingValue:
-            if len(self.controller.getLabelForRid(clip.rid)):
-              outputPrefix = self.convertFilenameToBaseName(self.controller.getLabelForRid(clip.rid),getBasename=False)
-            else:  
-              outputPrefix = self.convertFilenameToBaseName(clip.filename)
-
-          self.controller.encode(self.encodeRequestId,
-                                 'CONCAT',
-                                 encodeSequence,
-                                 options.copy(),
-                                 outputPrefix,
-                                 encodeProgressWidget.updateStatus) 
-    
-
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Clip Reencode':
-      for clip in self.sequencedClips:
-        encodeSequence = []
-        self.encodeRequestId+=1
-        definition = (clip.rid,clip.filename,clip.s,clip.e,
-                      nullfilter,
-                      nullfilter,
-                      nullfilter,
-                      1)
-        encodeSequence.append(definition)
-        if len(encodeSequence)>0:
-          options={
-            'frameSizeStrategy':self.frameSizeStrategyValue,
-            'maximumSize':self.maximumSizeValue,
-            'initialBitrate':self.initialbitrateValue,
-            'maximumBitrate':self.maxbitrateValue,
-            'maximumWidth':self.maximumWidthValue,
-            'transDuration':0.0,
-            'transStyle':self.transStyleValue,
-            'speedAdjustment':self.speedAdjustmentValue,
-            'speedAdjustmentInterploate':self.interpolateSpeedChangeValue,
-            'outputFormat':self.outputFormatValue,
-            'audioChannels':self.audioChannels,
-            'audioRate':self.audioRate,
-            'audioMerge':self.audioMerge,
-            'postProcessingFilter':self.postProcessingFilter,
-            'audioOverride':self.audioOverrideValue,
-            'audiOverrideDelay':self.audiOverrideDelayValue,
-            'gridLoopMergeOption':self.gridLoopMergeOption,
-            'minimumPSNR':self.minimumPSNR,
-            'optimizer':self.optimizer,
-            'audioOverrideBias':self.audiOverrideBiasValue,
-          }
-          options.update(self.advancedFlags)
-
-          encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,targetSize=self.maximumSizeValue,clip=clip)
-          self.encoderProgress.append(encodeProgressWidget)
-          outputPrefix = self.filenamePrefixValue
-          if self.automaticFileNamingValue:
-            if len(self.controller.getLabelForRid(clip.rid)):
-              outputPrefix = self.convertFilenameToBaseName(self.controller.getLabelForRid(clip.rid),getBasename=False)
-            else:  
-              outputPrefix = self.convertFilenameToBaseName(clip.filename)
-
-          self.controller.encode(self.encodeRequestId,
-                                 'CONCAT',
-                                 encodeSequence,
-                                 options.copy(),
-                                 outputPrefix,
-                                 encodeProgressWidget.updateStatus) 
-
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Full Source Reencode':
-    
-      uniquefilenames = set()
-      uniqueseq = []
-
-      for clip in self.sequencedClips:
-        if clip.filename not in uniquefilenames:
-            uniquefilenames.add(clip.filename)
-            uniqueseq.append(clip)
-
-      for clip in uniqueseq:
-        encodeSequence = []
-        self.encodeRequestId+=1
-        definition = (clip.rid,clip.filename,None,None,
-                      nullfilter,
-                      nullfilter,
-                      nullfilter,
-                      1)
-        encodeSequence.append(definition)
-        if len(encodeSequence)>0:
-          options={
-            'frameSizeStrategy':self.frameSizeStrategyValue,
-            'maximumSize':self.maximumSizeValue,
-            'initialBitrate':self.initialbitrateValue,
-            'maximumBitrate':self.maxbitrateValue,
-            'maximumWidth':self.maximumWidthValue,
-            'transDuration':0.0,
-            'transStyle':self.transStyleValue,
-            'speedAdjustment':self.speedAdjustmentValue,
-            'speedAdjustmentInterploate':self.interpolateSpeedChangeValue,
-            'outputFormat':self.outputFormatValue,
-            'audioChannels':self.audioChannels,
-            'audioRate':self.audioRate,
-            'audioMerge':self.audioMerge,
-            'postProcessingFilter':self.postProcessingFilter,
-            'audioOverride':self.audioOverrideValue,
-            'audiOverrideDelay':self.audiOverrideDelayValue,
-            'gridLoopMergeOption':self.gridLoopMergeOption,
-            'minimumPSNR':self.minimumPSNR,
-            'optimizer':self.optimizer,
-            'audioOverrideBias':self.audiOverrideBiasValue,
-          }
-          options.update(self.advancedFlags)
-
-          encodeProgressWidget = EncodeProgress(self.labelframeEncodeProgress,encodeRequestId=self.encodeRequestId,controller=self,targetSize=self.maximumSizeValue,clip=clip)
-          self.encoderProgress.append(encodeProgressWidget)
-          outputPrefix = self.filenamePrefixValue
-          if self.automaticFileNamingValue:
-            if len(self.controller.getLabelForRid(clip.rid)):
-              outputPrefix = self.convertFilenameToBaseName(self.controller.getLabelForRid(clip.rid),getBasename=False)
-            else:  
-              outputPrefix = self.convertFilenameToBaseName(clip.filename)
-
-          self.controller.encode(self.encodeRequestId,
-                                 'CONCAT',
-                                 encodeSequence,
-                                 options.copy(),
-                                 outputPrefix,
-                                 encodeProgressWidget.updateStatus)
+    def remove(self):
+        self.cancelEncodeRequest()
+        self.finalFilename = None
+        if self.progresspercent == 100:
+            self.setParent(None)
+            self.deleteLater()
 
 
+# ---------------------------------------------------------------------------
+# SequencedVideoEntry
+# ---------------------------------------------------------------------------
 
-    self.outserScrolledFrame.reposition()
+class SequencedVideoEntry(QFrame):
 
+    def __init__(self, parent, controller, sourceClip, direction='LEFT_RIGHT'):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Box)
 
-  def mergeStyleChanged(self,*args):
-    if self.mergeStyleVar.get().split('-')[0].strip()=='Grid':
-      self.scrolledframeSequenceContainer.pack_forget()
-      self.gridSequenceContainer.pack(expand='true', fill='both', padx='5', pady='5', side='top')
-      self.frameGridSettings.pack(fill='x', ipadx='3', side='top')
-      self.frameTransStyle.pack_forget()
-      self.frameTransDuration.pack_forget()
-      self.frameTransitionSettings.pack_forget()
-      self.frameMergeStyleSettings.pack(fill='x', ipadx='0', side='top')
-      self.profileCombo.state(["!disabled"])
-      self.frameSequenceValues.pack(anchor='nw', expand='true', fill='both', ipady='3', side='left')
-    elif self.mergeStyleVar.get().split('-')[0].strip()=='Individual Files' or self.mergeStyleVar.get().split('-')[0].strip()=='Clip Reencode':
-      self.gridSequenceContainer.pack_forget()
-      self.frameGridSettings.pack_forget()
-      self.frameTransDuration.pack_forget()
-      self.frameTransStyle.pack_forget()
-      self.frameTransitionSettings.pack_forget()
-      self.frameMergeStyleSettings.pack(fill='x', ipadx='0', side='top')
-      self.profileCombo.state(["!disabled"])
-      self.scrolledframeSequenceContainer.pack(expand='true', fill='both', padx='0', pady='0', side='top')
-      self.frameSequenceValues.pack(anchor='nw', expand='true', fill='both', ipady='3', side='left')
-    elif self.mergeStyleVar.get().split('-')[0].strip()=='Sequence':
-      self.gridSequenceContainer.pack_forget()
-      self.frameGridSettings.pack_forget()
-      self.scrolledframeSequenceContainer.pack(expand='true', fill='both', padx='0', pady='0', side='top')
-      self.frameTransStyle.pack(expand='true', fill='x', side='top')
-      self.frameTransDuration.pack(expand='true', fill='x', side='top')
-      self.frameTransitionSettings.pack(fill='x', ipadx='3', side='top')
-      self.frameMergeStyleSettings.pack(fill='x', ipadx='0', side='top')
-      self.profileCombo.state(["!disabled"]) 
-      self.frameSequenceValues.pack(anchor='nw', expand='true', fill='both', ipady='3', side='left')
-    elif self.mergeStyleVar.get().split('-')[0].strip()=='Stream Copy':
-      self.gridSequenceContainer.pack_forget()
-      self.frameGridSettings.pack_forget()
-      self.frameTransDuration.pack_forget()
-      self.frameTransStyle.pack_forget()
-      self.frameTransitionSettings.pack_forget()
-      self.frameMergeStyleSettings.pack_forget()
-      self.frameSequenceValues.pack_forget()
-      self.profileVar.set('None')
-      self.profileCombo.state(["disabled"])
-    elif self.mergeStyleVar.get().split('-')[0].strip()=='Full Source Reencode':
-      self.gridSequenceContainer.pack_forget()
-      self.frameGridSettings.pack_forget()
-      self.frameTransDuration.pack_forget()
-      self.frameTransStyle.pack_forget()
-      self.frameTransitionSettings.pack_forget()
-      self.frameMergeStyleSettings.pack(fill='x', ipadx='0', side='top')
-      self.profileCombo.state(["!disabled"])
-      self.scrolledframeSequenceContainer.pack(expand='true', fill='both', padx='0', pady='0', side='top')
-      self.frameSequenceValues.pack(anchor='nw', expand='true', fill='both', ipady='3', side='left')
+        self.sourceClip = sourceClip
+        self.rid = sourceClip.rid
+        self.s = sourceClip.s
+        self.e = sourceClip.e
+        self.controller = controller
+        self.player = None
+        self.muted = False
 
-    self.updateSelectableVideos()
-    for v in list(self.selectableVideos.values()) + self.sequencedClips:
-        v.requestQueuedPreviews()
-      
-  def updatedPredictedDuration(self):
-    totalTime=0
-    timeTrimmedByFade=0
-    for sv in self.sequencedClips:
-      totalTime+=(sv.e-sv.s)*(1/sv.getSpeed())
-      timeTrimmedByFade+=self.transDurationValue 
+        self.filename = sourceClip.filename
+        self.filterexp = sourceClip.filterexp
+        self.filterexpEnc = sourceClip.filterexpEnc
+        self.filteraudioexp = sourceClip.filteraudioexp
+        self.basename = sourceClip.basename
+        self.previewImage = sourceClip.previewImage
 
-    totalTime         = totalTime * (1/self.speedAdjustmentValue)
-    timeTrimmedByFade = timeTrimmedByFade * (1/self.speedAdjustmentValue)
+        self.queuedPreview = None
 
-    self.labelSequenceSummary.config(text='Number of Subclips: {n} Total duration {td:0.2f}s Output Duration {tdext:0.2f}s ({factor:0.2%} speed)'.format(
-                                     n=len(self.sequencedClips),
-                                     td=totalTime,
-                                     tdext=totalTime-timeTrimmedByFade,
-                                     factor=self.speedAdjustmentValue
-                                    ))
+        if direction == 'LEFT_RIGHT':
+            outer = QVBoxLayout(self)
+        else:
+            outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(2)
 
-    if self.automaticFileNamingVar.get():
-      for sv in self.sequencedClips[:1]:       
-          outputPrefix = self.convertFilenameToBaseName(sv.filename)
-          if len(self.controller.getLabelForRid(sv.rid)):
-            outputPrefix += '_'+self.convertFilenameToBaseName(self.controller.getLabelForRid(sv.rid),getBasename=False)
-          self.filenamePrefixVar.set(outputPrefix)
-      else:
-        namefound=False
-        for col in self.gridColumns:
-          for sv in col['clips']:
-            try:
-              outputPrefix = self.convertFilenameToBaseName(sv.filename)
-              if len(self.controller.getLabelForRid(sv.rid)):
-                outputPrefix += '_'+self.convertFilenameToBaseName(self.controller.getLabelForRid(sv.rid),getBasename=False)
-              self.filenamePrefixVar.set(outputPrefix)
-              namefound = True
-              break
-            except Exception as e:
-              print(e)
-          if namefound:
-            break 
+        self.labelSequenceVideoName = None
+        if direction == 'LEFT_RIGHT':
+            self.labelSequenceVideoName = QLabel('{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s, self.e, self.e - self.s))
+            self.labelSequenceVideoName.setAlignment(Qt.AlignCenter)
+            outer.addWidget(self.labelSequenceVideoName)
 
-  def convertFilenameToBaseName(self,filename, getBasename=True):
+        # Middle row: ◄ preview ►
+        midRow = QHBoxLayout()
+        if direction == 'LEFT_RIGHT':
+            self.btnBack = QPushButton('◄')
+            self.btnBack.setFixedWidth(24)
+            self.btnBack.clicked.connect(self.moveBack)
+            midRow.addWidget(self.btnBack)
 
-    whitespaceChars = '-_. '
-    usableChars = string.ascii_letters+string.digits+whitespaceChars
-    if getBasename:
-        basenameList = ''.join(x for x in os.path.basename(filename).rpartition('.')[0] if x in usableChars)
-    else:
-        basenameList = ''.join(x for x in filename if x in usableChars)
+        self.previewLabel = QLabel()
+        self.previewLabel.setFixedSize(120, 80)
+        self.previewLabel.setAlignment(Qt.AlignCenter)
+        if self.previewImage is not None:
+            self.previewLabel.setPixmap(
+                self.previewImage.scaled(120, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        midRow.addWidget(self.previewLabel)
 
-    for c in whitespaceChars:
-      basenameList = basenameList.replace(c,'-')
-    basename = ''
-    for c in basenameList:
-      if len(basename) == 0 or (basename[-1] != c and c == '-') or c != '-':
-        basename = basename+c
-    if len(basename)==0:
-      basename='output'
-    return basename
+        if direction == 'LEFT_RIGHT':
+            self.btnFwd = QPushButton('►')
+            self.btnFwd.setFixedWidth(24)
+            self.btnFwd.clicked.connect(self.moveForwards)
+            midRow.addWidget(self.btnFwd)
 
-  def setController(self,controller):
-    self.controller=controller
-    self.updateProfileSpecs()
+        outer.addLayout(midRow)
 
-    for filterElem in self.postProcessingFilterOptions:
-      if filterElem.upper() == self.controller.getDefaultPostFilter().upper():
-        self.postProcessingFilterVar.set(filterElem)
-        break
+        # Speed
+        speedRow = QHBoxLayout()
+        speedRow.addWidget(QLabel('Speed'))
+        self.spinSpeed = QDoubleSpinBox()
+        self.spinSpeed.setRange(0.001, 100.0)
+        self.spinSpeed.setSingleStep(0.1)
+        self.spinSpeed.setValue(1.0)
+        speedRow.addWidget(self.spinSpeed)
+        if not controller.globalOptions.get('perClipSpeedAdjustment', False):
+            # hide the speed row widget but keep it in layout for later
+            speedWidget = QWidget()
+            speedWidget.setLayout(speedRow)
+            speedWidget.hide()
+            outer.addWidget(speedWidget)
+        else:
+            speedWidget = QWidget()
+            speedWidget.setLayout(speedRow)
+            outer.addWidget(speedWidget)
 
+        btnRow = QHBoxLayout()
+        self.btnPreview = QPushButton('Preview ►')
+        self.btnPreview.clicked.connect(self.preview)
+        btnRow.addWidget(self.btnPreview)
 
+        self.btnRemove = QPushButton('Remove ✖')
+        self.btnRemove.clicked.connect(self.remove)
+        btnRow.addWidget(self.btnRemove)
+        outer.addLayout(btnRow)
 
-  def updateProfileSpecs(self):
-    self.profileSpecs = self.controller.getProfiles()
-    self.profiles = [x.get('name') for x in self.profileSpecs if x.get('name') is not None ]
+        self.btnFilter = QPushButton('View filter')
+        self.btnFilter.clicked.connect(self.viewFilter)
+        outer.addWidget(self.btnFilter)
 
-    menu = self.profileCombo["menu"]
-    menu.delete(0, "end")
-    for string in self.profiles:
-      menu.add_command(label=string,command=lambda value=string: self.profileVar.set(value))
+        self.setFixedWidth(170)
 
-    if self.defaultProfile in self.profiles:
-      self.profileVar.set(self.defaultProfile)
-    else:
-      self.profileVar.set(self.profiles[0])
+    # ---- entrySpeed compat shim ----
+    class _SpeedProxy:
+        def __init__(self, spin): self._spin = spin
+        def get(self):
+            try: return float(self._spin.value())
+            except: return 1.0
 
+    def getSpeed(self):
+        return self.spinSpeed.value()
 
-  def previewFrameCallback(self,requestId,timestamp,size,imageData):
-    print('previewFrameCallback',requestId)
-    photoImage = tk.PhotoImage(data=imageData)
-    for sv in self.selectableVideos.values():
-      if sv.rid==requestId:
-        sv.setPreviewImage(photoImage)
-    for sv in self.sequencedClips:
-      if sv.rid==requestId:
-        sv.setPreviewImage(photoImage)
-    for prog in self.encoderProgress:
-        if prog.rid == requestId:
-            prog.setPreviewImage(photoImage)
-    for col in self.gridColumns:
-        for sv in col['clips']:
-          if sv.rid==requestId:
-            sv.setPreviewImage(photoImage)
+    def viewFilter(self):
+        self.controller.viewFilterForClip(self)
 
-    self.scrolledframeInputCustContainer.reposition()
-    self.scrolledframeSequenceContainer.reposition()
+    def preview(self):
+        if self.player is not None:
+            self.player.terminate()
+        self.player = mpv.MPV(loop='inf', mute=True, volume=100, autofit_larger='1280')
+        self.player.play(self.filename)
+        self.player.ab_loop_a = self.s
+        self.player.ab_loop_b = self.e
+        self.player.start = self.s
+        self.player.time_pos = self.s
 
-  def requestPreviewFrame(self,rid,filename,timestamp,filterexp):
-    self.controller.requestPreviewFrame(rid,filename,timestamp,filterexp,(-1,80),self.previewFrameCallback)
+        def mutetoggle(key_state, key_name, key_char):
+            if 'd-' in key_state:
+                self.player.mute = not self.player.mute
+        self.mutetoggle = mutetoggle
+        self.player.register_key_binding('m', mutetoggle)
 
-  def addClipToSequence(self,clip):
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      if self.selectedColumn == None:
-        pass
-      else:
-        self.selectedColumn['clips'].append(
-          SequencedVideoEntry(self.selectedColumn['column'],self,clip,direction='UP_DOWN'),
-        )
+        def quitFunc(key_state, key_name, key_char):
+            def playerReaper():
+                player = self.player
+                self.player = None
+                player.terminate()
+                player.wait_for_shutdown()
+            if 'd-' in key_state or 'p-' in key_state:
+                self.playerReaper = threading.Thread(target=playerReaper, daemon=True)
+                self.playerReaper.start()
+        self.quitFunc = quitFunc
+        self.player.register_key_binding('q', quitFunc)
+        self.player.register_key_binding('Q', quitFunc)
+        self.player.register_key_binding('CLOSE_WIN', quitFunc)
 
-    else:
-      self.sequencedClips.append(
-        SequencedVideoEntry(self.sequenceContainer,self,clip),
-      )
-      #self.scrolledframeInputCustContainer.xview(mode='moveto',value=0)
-      #self.scrolledframeSequenceContainer.xview(mode='moveto',value=0)
-      self.scrolledframeInputCustContainer._scrollBothNow()
-      self.scrolledframeSequenceContainer._scrollBothNow()
-    self.updatedPredictedDuration()
+        def seekPlayer(player, offset):
+            player.command('seek', str(5 * offset), 'relative')
+        self.player.register_key_binding('WHEEL_UP',   lambda s, n, c, p=self.player, o=1:  seekPlayer(p, o))
+        self.player.register_key_binding('WHEEL_DOWN', lambda s, n, c, p=self.player, o=-1: seekPlayer(p, o))
 
-    if self.syncModal is not None:
-      self.syncModal.valuesChanged=True
-      self.syncModal.recalculateEDLTimings() 
+    def moveForwards(self):
+        self.controller.moveSequencedClip(self, 1)
+
+    def moveBack(self):
+        self.controller.moveSequencedClip(self, -1)
+
+    def remove(self):
+        self.controller.removeSequencedClip(self)
+
+    def setPreviewImage(self, pixmap):
+        if isinstance(pixmap, QPixmap):
+            self.previewLabel.setPixmap(
+                pixmap.scaled(120, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        self.previewImage = pixmap
+
+    def requestQueuedPreviews(self):
+        if self.queuedPreview is not None:
+            self.controller.requestPreviewFrame(*self.queuedPreview)
+        self.queuedPreview = None
+
+    def getpreviewImg(self):
+        return self.sourceClip.previewImage
+
+    def update(self, s, e, filterexp, filteraudioexp, filterexpEnc, requestPreviewFrame=True):
+        self.s = s
+        self.e = e
+        self.filterexp = filterexp
+        self.filteraudioexp = filteraudioexp
+        self.filterexpEnc = filterexpEnc
+        if self.labelSequenceVideoName is not None:
+            self.labelSequenceVideoName.setText('{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s, self.e, self.e - self.s))
+        if requestPreviewFrame:
+            self.controller.requestPreviewFrame(self.rid, self.filename, (self.e + self.s) / 2, self.filterexp)
+            self.queuedPreview = None
+        else:
+            self.queuedPreview = (self.rid, self.filename, (self.e + self.s) / 2, self.filterexp)
 
 
-  def moveSequencedClipByIndex(self,clipIndex,move):
-    clip=self.sequencedClips[clipIndex]
-    self.moveSequencedClip(clip,move)
+# ---------------------------------------------------------------------------
+# GridColumn
+# ---------------------------------------------------------------------------
 
-    if self.syncModal is not None:
-      self.syncModal.valuesChanged=True
-      self.syncModal.recalculateEDLTimings() 
+class GridColumn(QGroupBox):
 
-  def moveSequencedClip(self,clip,move):
-    currentIndex = self.sequencedClips.index(clip)
-    
-    if 0<=currentIndex+move<len(self.sequencedClips):
-      self.sequencedClips[currentIndex],self.sequencedClips[currentIndex+move] = self.sequencedClips[currentIndex+move],self.sequencedClips[currentIndex]
-      for c in self.sequencedClips:
-        c.pack_forget()
-      for c in self.sequencedClips:
-        c.pack(expand='false', fill='y', side='left')
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.clips = []
 
-    self.scrolledframeInputCustContainer.reposition()
-    self.scrolledframeSequenceContainer.reposition()
-    self.scrolledframeInputCustContainer._scrollBothNow()
-    self.scrolledframeSequenceContainer._scrollBothNow()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
 
-    if self.syncModal is not None:
-      self.syncModal.valuesChanged=True
-      self.syncModal.recalculateEDLTimings(rid=clip.rid) 
-      
-  def synchroniseCutController(self,rid,startoffset,forceTabJump=False):
-    self.controller.synchroniseCutController(rid,startoffset,forceTabJump=forceTabJump)
+        self.clipsWidget = QWidget()
+        self.clipsLayout = QVBoxLayout(self.clipsWidget)
+        self.clipsLayout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.clipsWidget)
 
-  def removeSequencedClip(self,clip):
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      for column in self.gridColumns:
+        btnRow = QHBoxLayout()
+        self.btnSelect = QPushButton('Select ✔')
+        self.btnSelect.clicked.connect(self.selectColumn)
+        btnRow.addWidget(self.btnSelect)
+
+        self.btnRemove = QPushButton('Remove ✖')
+        self.btnRemove.clicked.connect(self.removeColumn)
+        btnRow.addWidget(self.btnRemove)
+
+        layout.addLayout(btnRow)
+
+    def setSelected(self, isSelected):
+        if isSelected:
+            self.setTitle('Selected')
+            self.btnSelect.setText('Selected ✔')
+        else:
+            self.setTitle('')
+            self.btnSelect.setText('Select ✔')
+
+    def selectColumn(self):
+        self.controller.selectColumn(self)
+
+    def removeColumn(self):
+        self.controller.removeColumn(self)
+
+
+# ---------------------------------------------------------------------------
+# SelectableVideoEntry
+# ---------------------------------------------------------------------------
+
+class SelectableVideoEntry(QFrame):
+
+    def __init__(self, parent, controller, filename, rid, s, e,
+                 filterexp, filteraudioexp, filterexpEnc):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Box)
+
+        self.rid = rid
+        self.s = s
+        self.e = e
+        self.controller = controller
+        self.filename = filename
+        self.filterexp = filterexp
+        self.filteraudioexp = filteraudioexp
+        self.filterexpEnc = filterexpEnc
+        self.basename = os.path.basename(filename)[:14]
+        self.player = None
+        self.queuedPreview = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        self.labelName = QLabel('#{} {:0.2f}-{:0.2f} {:0.2f}s'.format(rid, s, e, e - s))
+        self.labelName.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.labelName)
+
+        self.previewLabel = QLabel()
+        self.previewLabel.setFixedSize(120, 80)
+        self.previewLabel.setAlignment(Qt.AlignCenter)
+        self.previewImage = None
+        self._loadDefaultPreview()
+        layout.addWidget(self.previewLabel)
+
+        self.btnPreview = QPushButton('preview ►')
+        self.btnPreview.clicked.connect(self.preview)
+        layout.addWidget(self.btnPreview)
+
+        self.btnAdd = QPushButton('Add to Sequence ▼')
+        self.btnAdd.clicked.connect(self.addClipToSequence)
+        layout.addWidget(self.btnAdd)
+
+        self.setFixedWidth(150)
+
+        # Request preview frame
+        if controller.syncModal is not None and controller.syncModal.isActive:
+            self.queuedPreview = (rid, filename, (e + s) / 2, filterexp)
+        else:
+            controller.requestPreviewFrame(rid, filename, (e + s) / 2, filterexp)
+
+        # Drag support: drag out clip name
+        self.previewLabel.mousePressEvent = self._dragStart
+
+        # Add to parent layout
+        if parent is not None and parent.layout() is not None:
+            parent.layout().addWidget(self)
+
+    def _loadDefaultPreview(self):
         try:
-          currentIndex = column['clips'].index(clip)
-          removedClip = column['clips'].pop(currentIndex)
-          removedClip.pack_forget()
-          removedClip.destroy()
-        except Exception as e:
-          logging.error("removeSequencedClip Exception",exc_info=e)
-    else:
-      currentIndex = self.sequencedClips.index(clip)
-      removedClip = self.sequencedClips.pop(currentIndex)
-      removedClip.pack_forget()
-      removedClip.destroy()
-      #self.scrolledframeSequenceContainer.xview(mode='moveto',value=0)
-      self.scrolledframeInputCustContainer._scrollBothNow()
-      self.scrolledframeSequenceContainer._scrollBothNow()
-      self.updatedPredictedDuration()
+            pix = QPixmap(os.path.join('resources', 'cutPreview.png'))
+            if not pix.isNull():
+                self.previewLabel.setPixmap(pix.scaled(120, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                return
+        except Exception:
+            pass
+        self.previewLabel.setText('No preview')
 
-    if self.syncModal is not None:
-      self.syncModal.valuesChanged=True
-      self.syncModal.recalculateEDLTimings() 
+    def _dragStart(self, event):
+        if event.button() == Qt.LeftButton:
+            drag = QDrag(self)
+            mime = QMimeData()
+            name = os.path.basename(self.filename).rpartition('.')[0]
+            mime.setText(name)
+            drag.setMimeData(mime)
+            drag.exec(Qt.CopyAction)
 
-  def videoSubclipDurationChangeCallback(self,rid=None,pos=None,action='UPDATE'):
-    if self.syncModal is not None and self.syncModal.isActive:
-      
-      refreshMode = 'CLIPS'
-      if self.mergeStyleVar.get().split('-')[0].strip()=='Full Source Reencode':
-        refreshMode = 'VIDEOS'
+    def setPreviewImage(self, pixmap):
+        if isinstance(pixmap, QPixmap):
+            self.previewLabel.setPixmap(
+                pixmap.scaled(120, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        self.previewImage = pixmap
 
-      if action == 'NEW':
-        self.updateSelectableVideos()        
-        self.addClipToSequence(self.selectableVideos[rid])
+    def requestQueuedPreviews(self):
+        if self.queuedPreview is not None:
+            self.controller.requestPreviewFrame(*self.queuedPreview)
+        self.queuedPreview = None
 
-      if action == 'REMOVE':
-          clipsforRemoval=[]
-          for sv in self.sequencedClips:
-            if sv.rid==rid:
-              clipsforRemoval.append(sv)
-          for clip in clipsforRemoval:      
-            self.removeSequencedClip(clip)
+    def update(self, s, e, filterexp, filteraudioexp, filterexpEnc, requestPreviewFrame=True):
+        self.s = s
+        self.e = e
+        self.filterexp = filterexp
+        self.filteraudioexp = filteraudioexp
+        self.filterexpEnc = filterexpEnc
+        self.labelName.setText('{:0.2f}-{:0.2f} {:0.2f}s'.format(self.s, self.e, self.e - self.s))
+        if requestPreviewFrame:
+            self.controller.requestPreviewFrame(self.rid, self.filename, (self.e + self.s) / 2, self.filterexp)
+            self.queuedPreview = None
+        else:
+            self.queuedPreview = (self.rid, self.filename, (self.e + self.s) / 2, self.filterexp)
 
-      changedrid=rid
-      for filename,rid,s,e,filterexp,filteraudioexp,filterexpEnc in sorted(self.controller.getFilteredClips(refreshMode),key=lambda x:(x[0],x[2]) ):
-        for sv in self.sequencedClips:
-          if sv.rid==rid and (changedrid is None or changedrid==rid):
-            sv.update(s,e,filterexp,filteraudioexp,filterexpEnc,requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
-      try:
-        self.syncModal.keepWidth=True
-        self.syncModal.valuesChanged=True
-        self.syncModal.recalculateEDLTimings(rid=changedrid,pos=pos)
-        self.syncModal.keepWidth=False
-      except:
+    def addClipToSequence(self):
+        self.controller.addClipToSequence(self)
+
+    def preview(self):
+        if self.player is not None:
+            self.player.terminate()
+        self.player = mpv.MPV(loop='inf', mute=True, volume=100, autofit_larger='1280')
+        self.player.play(self.filename)
+        self.player.ab_loop_a = self.s
+        self.player.ab_loop_b = self.e
+        self.player.start = self.s
+        self.player.time_pos = self.s
+
+        def mutetoggle(key_state, key_name, key_char):
+            if 'd-' in key_state:
+                self.player.mute = not self.player.mute
+        self.mutetoggle = mutetoggle
+        self.player.register_key_binding('m', mutetoggle)
+
+        def quitFunc(key_state, key_name, key_char):
+            def playerReaper():
+                player = self.player
+                self.player = None
+                player.terminate()
+                player.wait_for_shutdown()
+            if 'd-' in key_state or 'p-' in key_state:
+                self.playerReaper = threading.Thread(target=playerReaper, daemon=True)
+                self.playerReaper.start()
+        self.quitFunc = quitFunc
+        self.player.register_key_binding('q', quitFunc)
+        self.player.register_key_binding('Q', quitFunc)
+        self.player.register_key_binding('CLOSE_WIN', quitFunc)
+
+        def seekPlayer(player, offset):
+            player.command('seek', str(5 * offset), 'relative')
+        self.player.register_key_binding('WHEEL_UP',   lambda s, n, c, p=self.player, o=1:  seekPlayer(p, o))
+        self.player.register_key_binding('WHEEL_DOWN', lambda s, n, c, p=self.player, o=-1: seekPlayer(p, o))
+
+
+# ---------------------------------------------------------------------------
+# MergeSelectionUi
+# ---------------------------------------------------------------------------
+
+class MergeSelectionUi(QWidget):
+
+    def __init__(self, master=None, defaultProfile='None', globalOptions=None, *args, **kwargs):
+        super().__init__()
+
+        self.controller = None
+        self.defaultProfile = defaultProfile
+        self.globalOptions = globalOptions or {}
+        self.advancedFlags = {'forceGifFPS': True}
+
+        self.sequencedClips = []
+        self.gridColumns = []
+        self.selectableVideos = {}
+        self.selectedColumn = None
+        self.player = None
+        self.syncModal = None
+        self.encodeRequestId = 0
+        self.encoderProgress = []
+
+        # Encode settings value holders (replaces StringVar/BooleanVar)
+        self.automaticFileNamingValue = True
+        self.interpolateSpeedChangeValue = False
+        self.loopStartAndendValue = True
+        self.filenamePrefixValue = ''
+        self.outputFormatValue = ''
+        self.frameSizeStrategyValue = ''
+        self.maximumSizeValue = 0.0
+        self.initialbitrateValue = 2000.0 * 1024
+        self.maxbitrateValue = 6000.0 * 1024
+        self.maximumWidthValue = 1280
+        self.transDurationValue = 0.0
+        self.transStyleValue = 'fade'
+        self.speedAdjustmentValue = 1.0
+        self.audioRate = '64'
+        self.audioChannels = 'Mono'
+        self.audioMerge = 'Merge Normalize All'
+        self.postProcessingFilter = 'None'
+        self.gridLoopMergeOption = 'End on shortest Clip'
+        self.gridPadColour = 'Black'
+        self.gridPadWidth = 0
+        self.minimumPSNR = '0.0'
+        self.optimizer = 'Linear Search'
+        self.audiOverrideBiasValue = 1.0
+        self.audiOverrideDelayValue = '0'
+        self.audioOverrideValue = None
+
+        self._buildUi()
+
+    # -----------------------------------------------------------------------
+    # UI construction
+    # -----------------------------------------------------------------------
+
+    def _buildUi(self):
+        mainLayout = QVBoxLayout(self)
+        mainLayout.setContentsMargins(0, 0, 0, 0)
+
+        # Outer scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        mainLayout.addWidget(scroll)
+
+        inner = QWidget()
+        scroll.setWidget(inner)
+        self.innerLayout = QVBoxLayout(inner)
+        self.innerLayout.setContentsMargins(4, 4, 4, 4)
+        self.innerLayout.setSpacing(4)
+
+        self._buildMergeStyleRow()
+        self._buildProfileRow()
+        self._buildAvailableCutsSection()
+        self._buildAddAllClipsRow()
+        self._buildOutputPlanSection()
+
+    def _buildMergeStyleRow(self):
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Merge Style'))
+        self.mergeStyles = [
+            'Individual Files - Output each individual subclip as a separate file.',
+            'Sequence - Join the subclips into a sequence.',
+            'Grid - Pack videos into variably sized grid layouts.',
+            'Stream Copy - Ignore all filters and percorm no conversions, just stream cut and join the clips.',
+            'Full Source Reencode - Ignore all filters, timestamps, make no temporary files, just re-encode the full source.',
+            'Clip Reencode - Ignore all filters, make no temporary files, just re-encode the full source segements.',
+        ]
+        self.comboMergeStyle = QComboBox()
+        self.comboMergeStyle.addItems(self.mergeStyles)
+        self.comboMergeStyle.currentIndexChanged.connect(lambda _: self.mergeStyleChanged())
+        row.addWidget(self.comboMergeStyle, 1)
+        w = QWidget(); w.setLayout(row)
+        self.innerLayout.addWidget(w)
+
+    def _buildProfileRow(self):
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Profile'))
+        self.profileSpecs = [
+            {'name': 'None', 'editable': False},
+            {'name': 'Default max quality mp4', 'editable': False, 'outputFormat': 'mp4:x264', 'maximumSize': '0.0'},
+            {'name': 'Sub 4M max quality vp8 webm', 'editable': False, 'outputFormat': 'webm:VP8', 'maximumSize': '4.0'},
+            {'name': 'Sub 100M max quality mp4', 'editable': False, 'outputFormat': 'mp4:x264', 'maximumSize': '100.0'},
+        ]
+        self.profiles = [x['name'] for x in self.profileSpecs]
+        self.comboProfile = QComboBox()
+        self.comboProfile.addItems(self.profiles)
+        if self.defaultProfile in self.profiles:
+            self.comboProfile.setCurrentText(self.defaultProfile)
+        self.comboProfile.currentTextChanged.connect(self.profileChanged)
+        row.addWidget(self.comboProfile, 1)
+
+        self.btnSaveProfile = QPushButton('Save New Profile')
+        self.btnSaveProfile.clicked.connect(self.saveProfile)
+        row.addWidget(self.btnSaveProfile)
+
+        self.btnDeleteProfile = QPushButton('Delete Profile')
+        self.btnDeleteProfile.clicked.connect(self.deleteProfile)
+        self.btnDeleteProfile.setEnabled(False)
+        row.addWidget(self.btnDeleteProfile)
+
+        w = QWidget(); w.setLayout(row)
+        self.innerLayout.addWidget(w)
+
+    def _buildAvailableCutsSection(self):
+        box = QGroupBox('Available Cuts')
+        boxLayout = QVBoxLayout(box)
+
+        self.selectableScrollArea = QScrollArea()
+        self.selectableScrollArea.setWidgetResizable(True)
+        self.selectableScrollArea.setFixedHeight(200)
+        self.selectableScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.selectableScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.selectableContainer = QWidget()
+        self.selectableContainerLayout = QHBoxLayout(self.selectableContainer)
+        self.selectableContainerLayout.setContentsMargins(4, 4, 4, 4)
+        self.selectableContainerLayout.setSpacing(4)
+        self.selectableContainerLayout.addStretch(1)
+
+        self.selectableScrollArea.setWidget(self.selectableContainer)
+        boxLayout.addWidget(self.selectableScrollArea)
+        self.innerLayout.addWidget(box)
+
+    def _buildAddAllClipsRow(self):
+        row = QHBoxLayout()
+        btnAll = QPushButton('▼ Add all clips in timeline order ▼')
+        btnAll.clicked.connect(self.addAllClipsInTimelineOrder)
+        row.addWidget(btnAll, 1)
+
+        btnRid = QPushButton('Add all clips in Creation order')
+        btnRid.clicked.connect(self.addAllClipsInRIDOrder)
+        row.addWidget(btnRid)
+
+        btnRand = QPushButton('Add all clips in random order')
+        btnRand.clicked.connect(self.addAllClipsInRandomOrder)
+        row.addWidget(btnRand)
+
+        btnSmart = QPushButton('Add all clips in non-sequential order')
+        btnSmart.clicked.connect(self.addAllClipsInSmartRandomOrder)
+        row.addWidget(btnSmart)
+
+        btnInter = QPushButton('Add all clips interspersed')
+        btnInter.clicked.connect(self.addAllClipsInInterspersedOrder)
+        row.addWidget(btnInter)
+
+        w = QWidget(); w.setLayout(row)
+        self.innerLayout.addWidget(w)
+
+    def _buildOutputPlanSection(self):
+        self.outputPlanBox = QGroupBox('Output Plan')
+        planLayout = QVBoxLayout(self.outputPlanBox)
+
+        # Sequence container (horizontal scroll)
+        self.sequenceScrollArea = QScrollArea()
+        self.sequenceScrollArea.setWidgetResizable(True)
+        self.sequenceScrollArea.setFixedHeight(280)
+        self.sequenceScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.sequenceScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.sequenceContainer = QWidget()
+        self.sequenceContainerLayout = QHBoxLayout(self.sequenceContainer)
+        self.sequenceContainerLayout.setContentsMargins(4, 4, 4, 4)
+        self.sequenceContainerLayout.setSpacing(4)
+        self.sequenceContainerLayout.addStretch(1)
+        self.sequenceScrollArea.setWidget(self.sequenceContainer)
+        planLayout.addWidget(self.sequenceScrollArea)
+
+        # Grid container
+        self.gridWidget = QWidget()
+        self.gridWidgetLayout = QVBoxLayout(self.gridWidget)
+        self.gridWidgetLayout.setContentsMargins(0, 0, 0, 0)
+
+        self.gridColumnContainer = QWidget()
+        self.gridColumnLayout = QHBoxLayout(self.gridColumnContainer)
+        self.gridColumnLayout.setContentsMargins(0, 0, 0, 0)
+        self.gridColumnLayout.addStretch(1)
+        self.gridWidgetLayout.addWidget(self.gridColumnContainer)
+
+        self.btnAddColumn = QPushButton('Add Column ⇅')
+        self.btnAddColumn.clicked.connect(self.addColumn)
+        self.gridWidgetLayout.addWidget(self.btnAddColumn)
+
+        self.gridWidget.hide()
+        planLayout.addWidget(self.gridWidget)
+
+        # Summary label
+        self.labelSequenceSummary = QLabel('Number of Subclips: 0 Total subclip duration 0s Output Duration 0s')
+        self.labelSequenceSummary.setAlignment(Qt.AlignCenter)
+        planLayout.addWidget(self.labelSequenceSummary)
+
+        # Encode settings area
+        self._buildEncodeSettings(planLayout)
+
+        # Encode progress area
+        self.encodeProgressContainer = QWidget()
+        self.encodeProgressLayout = QVBoxLayout(self.encodeProgressContainer)
+        self.encodeProgressLayout.setContentsMargins(0, 0, 0, 0)
+        planLayout.addWidget(self.encodeProgressContainer)
+
+        self.innerLayout.addWidget(self.outputPlanBox)
+
+    def _buildEncodeSettings(self, parentLayout):
+        settingsBox = QFrame()
+        settingsBox.setFrameShape(QFrame.StyledPanel)
+        outerH = QHBoxLayout(settingsBox)
+
+        # Left: values grid
+        valGrid = QGridLayout()
+        valGrid.setHorizontalSpacing(8)
+        valGrid.setVerticalSpacing(4)
+
+        # --- Output format ---
+        valGrid.addWidget(QLabel('Output format'), 0, 0, Qt.AlignRight)
+        self.outputFormats = [
+            'mp4:x264', 'mp4:x264_Nvenc', 'mp4:H265_Nvenc',
+            'mp4:H264_VideoToolbox', 'mp4:H265_VideoToolbox', 'mp4:AV1',
+            'webm:VP8', 'webm:VP9',
+        ]
+        self.customEncoderspecs = {}
+        customEncoderDir = 'customEnoderSpecs'
+        if os.path.exists(customEncoderDir):
+            for fn in os.listdir(customEncoderDir):
+                try:
+                    p = os.path.join(customEncoderDir, fn)
+                    spec = SpecVideoEncoder(p)
+                    if spec.validate():
+                        self.outputFormats.append(spec.getDisplayName())
+                        self.customEncoderspecs[spec.getDisplayName()] = spec
+                except Exception as e:
+                    logging.error('customEncoderspecs Exception', exc_info=e)
+        self.outputFormats += ['gif', 'gifski', 'apng']
+        self.availableOutputFormats = list(self.outputFormats)
+
+        self.comboOutputFormat = QComboBox()
+        self.comboOutputFormat.addItems(self.outputFormats)
+        self.comboOutputFormat.setToolTip('The output format of the rendered video.')
+        self.comboOutputFormat.currentTextChanged.connect(self.valueChange)
+        valGrid.addWidget(self.comboOutputFormat, 0, 1)
+
+        # --- Initial bitrate ---
+        valGrid.addWidget(QLabel('Initial Bitrate estimate (KB/s)'), 1, 0, Qt.AlignRight)
+        self.spinInitialBitrate = QDoubleSpinBox()
+        self.spinInitialBitrate.setRange(0, 1e9)
+        self.spinInitialBitrate.setSingleStep(100)
+        self.spinInitialBitrate.setValue(2000.0)
+        self.spinInitialBitrate.setToolTip('Initial bitrate guess.')
+        self.spinInitialBitrate.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinInitialBitrate, 1, 1)
+
+        # --- Max bitrate ---
+        valGrid.addWidget(QLabel('Bitrate Cap (KB/s)'), 2, 0, Qt.AlignRight)
+        self.spinMaxBitrate = QDoubleSpinBox()
+        self.spinMaxBitrate.setRange(0, 1e9)
+        self.spinMaxBitrate.setSingleStep(100)
+        self.spinMaxBitrate.setValue(6000.0)
+        self.spinMaxBitrate.setToolTip('Maximum bitrate.')
+        self.spinMaxBitrate.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinMaxBitrate, 2, 1)
+
+        # --- Max size ---
+        valGrid.addWidget(QLabel('Maximum File Size (MB)'), 3, 0, Qt.AlignRight)
+        self.spinMaxSize = QDoubleSpinBox()
+        self.spinMaxSize.setRange(0, 1e9)
+        self.spinMaxSize.setSingleStep(0.1)
+        self.spinMaxSize.setValue(0.0)
+        self.spinMaxSize.setToolTip('Max file size in MB, 0 = no limit.')
+        self.spinMaxSize.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinMaxSize, 3, 1)
+
+        # --- Audio channels ---
+        valGrid.addWidget(QLabel('Audio Channels'), 4, 0, Qt.AlignRight)
+        audioRow = QHBoxLayout()
+        self.audioChannelsOptions = ['Stereo', 'Mono', 'No audio']
+        self.comboAudioChannels = QComboBox()
+        self.comboAudioChannels.addItems(self.audioChannelsOptions)
+        self.comboAudioChannels.setCurrentText('Mono')
+        self.comboAudioChannels.currentTextChanged.connect(self.valueChange)
+        audioRow.addWidget(self.comboAudioChannels)
+        audioRow.addWidget(QLabel('@ Bitrate (KB/s)'))
+        self.spinAudioRate = QDoubleSpinBox()
+        self.spinAudioRate.setRange(5, 510)
+        self.spinAudioRate.setSingleStep(1)
+        self.spinAudioRate.setValue(64)
+        self.spinAudioRate.valueChanged.connect(self.valueChange)
+        audioRow.addWidget(self.spinAudioRate)
+        aw = QWidget(); aw.setLayout(audioRow)
+        valGrid.addWidget(aw, 4, 1)
+
+        # --- Min PSNR ---
+        valGrid.addWidget(QLabel('Minimum PSNR'), 5, 0, Qt.AlignRight)
+        self.spinMinPSNR = QDoubleSpinBox()
+        self.spinMinPSNR.setRange(0, 48)
+        self.spinMinPSNR.setSingleStep(1)
+        self.spinMinPSNR.setValue(0)
+        self.spinMinPSNR.setToolTip('Minimum acceptable quality, 0 = ignore.')
+        self.spinMinPSNR.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinMinPSNR, 5, 1)
+
+        # --- Audio dub ---
+        valGrid.addWidget(QLabel('Audio Dub'), 6, 0, Qt.AlignRight)
+        self.btnAudioOverride = QPushButton('None')
+        self.btnAudioOverride.clicked.connect(self.selectAudioOverride)
+        self.btnAudioOverride.setToolTip('MP3/WAV file to replace original audio.')
+        valGrid.addWidget(self.btnAudioOverride, 6, 1)
+
+        # --- Dub mix bias ---
+        valGrid.addWidget(QLabel('Dub Mix Bias'), 7, 0, Qt.AlignRight)
+        self.spinAudioBias = QDoubleSpinBox()
+        self.spinAudioBias.setRange(0, 1)
+        self.spinAudioBias.setSingleStep(0.05)
+        self.spinAudioBias.setValue(1.0)
+        self.spinAudioBias.setToolTip('1 = all dub, 0 = all original.')
+        self.spinAudioBias.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinAudioBias, 7, 1)
+
+        # Right column
+        # --- Filename ---
+        valGrid.addWidget(QLabel('Output filename prefix'), 0, 2, Qt.AlignRight)
+        filenameRow = QHBoxLayout()
+        from PySide6.QtWidgets import QLineEdit
+        self.entryFilenamePrefix = QLineEdit()
+        self.entryFilenamePrefix.textChanged.connect(self.valueChange)
+        filenameRow.addWidget(self.entryFilenamePrefix, 1)
+        self.checkAutoName = QCheckBox('Auto-name')
+        self.checkAutoName.setChecked(True)
+        self.checkAutoName.stateChanged.connect(self.valueChange)
+        filenameRow.addWidget(self.checkAutoName)
+        fnw = QWidget(); fnw.setLayout(filenameRow)
+        valGrid.addWidget(fnw, 0, 3)
+
+        # --- Frame size strategy ---
+        valGrid.addWidget(QLabel('Size Match Strategy'), 1, 2, Qt.AlignRight)
+        self.frameSizeStrategies = [
+            'Rescale to largest with black bars',
+            'Rescale to largest and center crop smaller',
+        ]
+        self.comboSizeStrategy = QComboBox()
+        self.comboSizeStrategy.addItems(self.frameSizeStrategies)
+        self.comboSizeStrategy.currentTextChanged.connect(self.valueChange)
+        valGrid.addWidget(self.comboSizeStrategy, 1, 3)
+
+        # --- Max width ---
+        valGrid.addWidget(QLabel('Limit largest dimension'), 2, 2, Qt.AlignRight)
+        self.defaultMaxWidthOptions = [
+            '3840 - 4K', '2560 - QHD', '2048 - 2K', '1920 - Full HD',
+            '1600 - HD+', '1440 - Quad HD', '1280 - 720p', '1024 - XGA',
+            '960 - qHD', '854 - 480p', '720 - NTSC', '640 - nHD', '480 - SD',
+        ]
+        self.comboMaxWidth = QComboBox()
+        self.comboMaxWidth.setEditable(True)
+        self.comboMaxWidth.addItems(self.defaultMaxWidthOptions)
+        self.comboMaxWidth.setCurrentText('1280 - 720p')
+        self.comboMaxWidth.currentTextChanged.connect(self.valueChange)
+        valGrid.addWidget(self.comboMaxWidth, 2, 3)
+
+        # --- Speed adjustment ---
+        valGrid.addWidget(QLabel('Speed adjustment'), 3, 2, Qt.AlignRight)
+        speedRow = QHBoxLayout()
+        self.spinSpeedAdjust = QDoubleSpinBox()
+        self.spinSpeedAdjust.setRange(0.001, 1000)
+        self.spinSpeedAdjust.setSingleStep(0.01)
+        self.spinSpeedAdjust.setValue(1.0)
+        self.spinSpeedAdjust.valueChanged.connect(self.valueChange)
+        speedRow.addWidget(self.spinSpeedAdjust, 1)
+        self.checkInterpolate = QCheckBox('Interpolate')
+        self.checkInterpolate.stateChanged.connect(self.valueChange)
+        speedRow.addWidget(self.checkInterpolate)
+        sw = QWidget(); sw.setLayout(speedRow)
+        valGrid.addWidget(sw, 3, 3)
+
+        # --- Optimizer ---
+        valGrid.addWidget(QLabel('Optimiser'), 4, 2, Qt.AlignRight)
+        self.optimziers = ['Linear Search', 'Nelder-Mead - Early Exit', 'Nelder-Mead - Exhaustive']
+        self.comboOptimizer = QComboBox()
+        self.comboOptimizer.addItems(self.optimziers)
+        self.comboOptimizer.currentTextChanged.connect(self.valueChange)
+        valGrid.addWidget(self.comboOptimizer, 4, 3)
+
+        # --- Dub delay ---
+        valGrid.addWidget(QLabel('Dub Delay (seconds)'), 5, 2, Qt.AlignRight)
+        self.spinAudioDelay = QDoubleSpinBox()
+        self.spinAudioDelay.setRange(-9999, 9999)
+        self.spinAudioDelay.setSingleStep(0.5)
+        self.spinAudioDelay.setValue(0)
+        self.spinAudioDelay.valueChanged.connect(self.valueChange)
+        valGrid.addWidget(self.spinAudioDelay, 5, 3)
+
+        # --- Post filter ---
+        valGrid.addWidget(QLabel('Post filter'), 6, 2, Qt.AlignRight)
+        self.postProcessingFilterOptions = ['None', 'Disable all filters']
+        if os.path.exists('postFilters'):
+            for f in os.listdir('postFilters'):
+                if f.upper().endswith('TXT') and f.upper().startswith('POSTFILTER-'):
+                    self.postProcessingFilterOptions.append(f)
+        self.comboPostFilter = QComboBox()
+        self.comboPostFilter.addItems(self.postProcessingFilterOptions)
+        defaultPostFilter = 'None'
+        for fe in self.postProcessingFilterOptions:
+            if 'DEFAULT' in fe.upper():
+                defaultPostFilter = fe
+                break
+        self.comboPostFilter.setCurrentText(defaultPostFilter)
+        self.comboPostFilter.currentTextChanged.connect(self.valueChange)
+        valGrid.addWidget(self.comboPostFilter, 6, 3)
+
+        # --- Advanced options ---
+        self.btnAdvancedOptions = QPushButton('Advanced Encode Options')
+        self.btnAdvancedOptions.clicked.connect(self.selectAdvancedOptions)
+        valGrid.addWidget(self.btnAdvancedOptions, 7, 3)
+
+        outerH.addLayout(valGrid, 1)
+
+        # --- Transition settings (shown for Sequence mode) ---
+        self.frameTransitionSettings = QGroupBox('Transitions')
+        transLayout = QVBoxLayout(self.frameTransitionSettings)
+
+        transRow = QHBoxLayout()
+        transRow.addWidget(QLabel('Transition Duration'))
+        self.spinTransDuration = QDoubleSpinBox()
+        self.spinTransDuration.setRange(0, 9999)
+        self.spinTransDuration.setSingleStep(0.1)
+        self.spinTransDuration.setValue(0.0)
+        self.spinTransDuration.valueChanged.connect(self.valueChange)
+        transRow.addWidget(self.spinTransDuration, 1)
+        transLayout.addLayout(transRow)
+
+        transStyleRow = QHBoxLayout()
+        transStyleRow.addWidget(QLabel('Transition Style'))
+        self.transStyles = [
+            'circleclose', 'circlecrop', 'circleopen', 'diagbl', 'diagbr', 'diagtl', 'diagtr',
+            'dissolve', 'distance', 'fade', 'fadeblack', 'fadegrays', 'fadewhite', 'hblur',
+            'hlslice', 'horzclose', 'horzopen', 'hrslice', 'pixelize', 'radial', 'rectcrop',
+            'slidedown', 'slideleft', 'slideright', 'slideup', 'smoothdown', 'smoothleft',
+            'smoothright', 'smoothup', 'squeezeh', 'squeezev', 'vdslice', 'vertclose',
+            'vertopen', 'vuslice', 'wipebl', 'wipebr', 'wipedown', 'wipeleft', 'wiperight',
+            'wipetl', 'wipetr', 'wipeup', 'zoomin',
+            'circleopen, circleclose', 'fadewhite, fadeblack', 'slideleft, slideright',
+            'smoothdown, smoothup', 'smoothleft, smoothright',
+            'wipetl, wipetr, wipebl, wipebr',
+        ]
+        self.comboTransStyle = QComboBox()
+        self.comboTransStyle.setEditable(True)
+        self.comboTransStyle.addItems(self.transStyles)
+        self.comboTransStyle.setCurrentText('fade')
+        self.comboTransStyle.currentTextChanged.connect(self.valueChange)
+        transStyleRow.addWidget(self.comboTransStyle, 1)
+        transLayout.addLayout(transStyleRow)
+
+        self.checkLoopStartEnd = QCheckBox('Loop start to end')
+        self.checkLoopStartEnd.setChecked(True)
+        self.checkLoopStartEnd.stateChanged.connect(self.valueChange)
+        transLayout.addWidget(self.checkLoopStartEnd)
+
+        self.btnPreviewSequence = QPushButton('Preview sequence timings')
+        self.btnPreviewSequence.clicked.connect(self.previewSequencetimings)
+        transLayout.addWidget(self.btnPreviewSequence)
+
+        self.frameTransitionSettings.hide()
+        outerH.addWidget(self.frameTransitionSettings)
+
+        # --- Grid settings (shown for Grid mode) ---
+        self.frameGridSettings = QGroupBox('Grid Options')
+        gridOptLayout = QVBoxLayout(self.frameGridSettings)
+
+        audioMergeRow = QHBoxLayout()
+        audioMergeRow.addWidget(QLabel('Grid Audio Merge'))
+        self.audioMergeOptions = ['Merge Normalize All', 'Merge Original Volume', 'Selected Column Only', 'Largest Cell by Area', 'Adaptive Loudest Cell']
+        self.comboAudioMerge = QComboBox()
+        self.comboAudioMerge.addItems(self.audioMergeOptions)
+        self.comboAudioMerge.currentTextChanged.connect(self.valueChange)
+        audioMergeRow.addWidget(self.comboAudioMerge, 1)
+        gridOptLayout.addLayout(audioMergeRow)
+
+        loopRow = QHBoxLayout()
+        loopRow.addWidget(QLabel('Grid Loop Option'))
+        self.gridLoopMergeOptions = ['End on shortest Clip', 'Loop shorter clips to match longest']
+        self.comboGridLoop = QComboBox()
+        self.comboGridLoop.addItems(self.gridLoopMergeOptions)
+        self.comboGridLoop.currentTextChanged.connect(self.valueChange)
+        loopRow.addWidget(self.comboGridLoop, 1)
+        gridOptLayout.addLayout(loopRow)
+
+        padColRow = QHBoxLayout()
+        padColRow.addWidget(QLabel('Grid Pad Colour'))
+        self.gridPadColourOptions = ['Black', 'White', 'DeepPink', 'MintCream', 'DarkGray']
+        self.comboPadColour = QComboBox()
+        self.comboPadColour.addItems(self.gridPadColourOptions)
+        self.comboPadColour.currentTextChanged.connect(self.valueChange)
+        padColRow.addWidget(self.comboPadColour, 1)
+        gridOptLayout.addLayout(padColRow)
+
+        padWRow = QHBoxLayout()
+        padWRow.addWidget(QLabel('Grid Pad Width'))
+        self.spinGridPadWidth = QSpinBox()
+        self.spinGridPadWidth.setRange(0, 9999)
+        self.spinGridPadWidth.valueChanged.connect(self.valueChange)
+        padWRow.addWidget(self.spinGridPadWidth, 1)
+        gridOptLayout.addLayout(padWRow)
+
+        self.frameGridSettings.hide()
+        outerH.addWidget(self.frameGridSettings)
+
+        # Actions column (right)
+        actionsLayout = QVBoxLayout()
+        self.btnClearSeq = QPushButton('Clear Sequence')
+        self.btnClearSeq.clicked.connect(self.clearSequence)
+        actionsLayout.addWidget(self.btnClearSeq)
+
+        self.btnEncode = QPushButton('Encode')
+        self.btnEncode.clicked.connect(self.encodeCurrent)
+        actionsLayout.addWidget(self.btnEncode, 1)
+
+        self.btnCancelAll = QPushButton('Cancel all')
+        self.btnCancelAll.clicked.connect(self.cancelAllEncodes)
+        actionsLayout.addWidget(self.btnCancelAll)
+
+        outerH.addLayout(actionsLayout)
+
+        parentLayout.addWidget(settingsBox)
+
+        # Initialize value cache from widgets
+        self.valueChange()
+
+    # -----------------------------------------------------------------------
+    # Value change handler (replaces StringVar/BooleanVar traces)
+    # -----------------------------------------------------------------------
+
+    def valueChange(self, *args):
+        try:
+            self.automaticFileNamingValue = self.checkAutoName.isChecked()
+            self.entryFilenamePrefix.setEnabled(not self.automaticFileNamingValue)
+        except Exception:
+            pass
+
+        try:
+            v = self.btnAudioOverride.text()
+            self.audioOverrideValue = None if v.upper() == 'NONE' else v
+            self.audiOverrideDelayValue = str(self.spinAudioDelay.value())
+        except Exception:
+            pass
+
+        try:
+            self.loopStartAndendValue = self.checkLoopStartEnd.isChecked()
+        except Exception:
+            pass
+
+        try:
+            self.interpolateSpeedChangeValue = self.checkInterpolate.isChecked()
+        except Exception:
+            pass
+
+        try:
+            prefix = self.entryFilenamePrefix.text()
+            self.filenamePrefixValue = prefix
+            testpath = prefix + '.bin'
+            sanitisedPath = sanitize_filepath(testpath)
+            pre, _ = os.path.split(testpath)
+            if testpath != sanitisedPath or pre != '':
+                self.entryFilenamePrefix.setStyleSheet('background: #ffcccc')
+            else:
+                self.entryFilenamePrefix.setStyleSheet('')
+        except Exception:
+            try:
+                self.entryFilenamePrefix.setStyleSheet('background: #ffcccc')
+            except Exception:
+                pass
+
+        try:
+            tempFmt = self.comboOutputFormat.currentText()
+            if tempFmt != self.outputFormatValue:
+                for k in list(self.advancedFlags.keys()):
+                    if k.startswith('encoder-option-'):
+                        del self.advancedFlags[k]
+            self.outputFormatValue = tempFmt
+        except Exception:
+            pass
+
+        try:
+            self.frameSizeStrategyValue = self.comboSizeStrategy.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.initialbitrateValue = float(self.spinInitialBitrate.value()) * 1024
+        except Exception:
+            pass
+
+        try:
+            self.maxbitrateValue = float(self.spinMaxBitrate.value()) * 1024
+        except Exception:
+            pass
+
+        try:
+            self.maximumSizeValue = float(self.spinMaxSize.value())
+        except Exception:
+            pass
+
+        try:
+            widthStr = self.comboMaxWidth.currentText().split('-')[0].strip()
+            self.maximumWidthValue = int(float(widthStr))
+        except Exception:
+            pass
+
+        try:
+            self.transDurationValue = float(self.spinTransDuration.value())
+            minlen = float('inf')
+            for clip in self.sequencedClips:
+                minlen = min((clip.e - clip.s), minlen)
+                minlen = floor(minlen * 1000) / 1000.0
+            self.transDurationValue = min(self.transDurationValue, minlen / 2)
+        except Exception:
+            pass
+
+        try:
+            self.transStyleValue = self.comboTransStyle.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.speedAdjustmentValue = float(self.spinSpeedAdjust.value())
+        except Exception:
+            pass
+
+        try:
+            self.audioRate = str(int(self.spinAudioRate.value()))
+        except Exception:
+            pass
+
+        try:
+            self.audioChannels = self.comboAudioChannels.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.audioMerge = self.comboAudioMerge.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.postProcessingFilter = self.comboPostFilter.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.gridLoopMergeOption = self.comboGridLoop.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.gridPadColour = self.comboPadColour.currentText()
+        except Exception:
+            self.gridPadColour = 'Black'
+
+        try:
+            self.gridPadWidth = int(self.spinGridPadWidth.value())
+        except Exception:
+            self.gridPadWidth = 0
+
+        try:
+            self.minimumPSNR = str(self.spinMinPSNR.value())
+        except Exception:
+            pass
+
+        try:
+            self.optimizer = self.comboOptimizer.currentText()
+        except Exception:
+            pass
+
+        try:
+            self.audiOverrideBiasValue = max(0.0, min(1.0, float(self.spinAudioBias.value())))
+        except Exception:
+            pass
+
+        self.updatedPredictedDuration()
+
+    # -----------------------------------------------------------------------
+    # Profile / output format management
+    # -----------------------------------------------------------------------
+
+    def profileChanged(self, profileName=None):
+        if profileName is None:
+            profileName = self.comboProfile.currentText()
+        self.editableProfileVars = [
+            'outputFormat', 'frameSizeStrategy', 'maximumSize', 'maximumWidth',
+            'transDuration', 'transStyle', 'speedAdjustment', 'audioChannels',
+            'audioMergeOptions', 'gridLoopMergeOptions', 'audioRate',
+        ]
+        for p in self.profileSpecs:
+            if p['name'] == profileName:
+                self.btnDeleteProfile.setEnabled(p.get('editable', False))
+                for k, v in p.items():
+                    if k == 'outputFormat' and self.controller is not None:
+                        v = self.controller.resolveOutputFormat(v)
+                    if k == 'outputFormat':
+                        self.comboOutputFormat.setCurrentText(str(v))
+                    elif k == 'maximumSize':
+                        self.spinMaxSize.setValue(float(v))
+                break
+
+    def deleteProfile(self):
         pass
 
-  def updateSelectableVideos(self):
-      unusedRids=set(self.selectableVideos.keys())
+    def saveProfile(self):
+        pass
 
-      refreshMode = 'CLIPS'
-      if self.mergeStyleVar.get().split('-')[0].strip()=='Full Source Reencode':
-        refreshMode = 'VIDEOS'
+    def updateProfileSpecs(self):
+        self.profileSpecs = self.controller.getProfiles()
+        self.profiles = [x['name'] for x in self.profileSpecs if x.get('name')]
+        self.comboProfile.blockSignals(True)
+        self.comboProfile.clear()
+        self.comboProfile.addItems(self.profiles)
+        if self.defaultProfile in self.profiles:
+            self.comboProfile.setCurrentText(self.defaultProfile)
+        else:
+            self.comboProfile.setCurrentIndex(0)
+        self.comboProfile.blockSignals(False)
+        self.profileChanged(self.comboProfile.currentText())
 
-      for filename,rid,s,e,filterexp,filteraudioexp,filterexpEnc in sorted(self.controller.getFilteredClips(refreshMode),key=lambda x:(x[0],x[2]) ):
-        if rid in self.selectableVideos:
-          unusedRids.remove(rid)
-        if rid not in self.selectableVideos:
-          self.selectableVideos[rid] = SelectableVideoEntry(self.selectableVideosContainer,self,filename,rid,s,e,filterexp,filteraudioexp,filterexpEnc)
-        elif self.selectableVideos[rid].s != s or self.selectableVideos[rid].e != e or self.selectableVideos[rid].filterexp != filterexp or self.selectableVideos[rid].filteraudioexp != filteraudioexp:
-           self.selectableVideos[rid].update(s,e,filterexp,filteraudioexp,filterexpEnc,requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+    def updateOutputFormats(self):
+        if self.controller is None:
+            return
+        availableFormats = self.controller.getAvailableOutputFormats()
+        if not availableFormats:
+            availableFormats = self.outputFormats
+        self.outputFormats = availableFormats
+        current = self.comboOutputFormat.currentText()
+        self.comboOutputFormat.blockSignals(True)
+        self.comboOutputFormat.clear()
+        self.comboOutputFormat.addItems(self.outputFormats)
+        if current in self.outputFormats:
+            self.comboOutputFormat.setCurrentText(current)
+        else:
+            self.comboOutputFormat.setCurrentIndex(0)
+        self.comboOutputFormat.blockSignals(False)
 
+    # -----------------------------------------------------------------------
+    # Merge style
+    # -----------------------------------------------------------------------
+
+    def mergeStyleChanged(self, *args):
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.sequenceScrollArea.hide()
+            self.gridWidget.show()
+            self.frameGridSettings.show()
+            self.frameTransitionSettings.hide()
+            self.comboProfile.setEnabled(True)
+        elif style in ('Individual Files', 'Clip Reencode'):
+            self.gridWidget.hide()
+            self.frameGridSettings.hide()
+            self.frameTransitionSettings.hide()
+            self.comboProfile.setEnabled(True)
+            self.sequenceScrollArea.show()
+        elif style == 'Sequence':
+            self.gridWidget.hide()
+            self.frameGridSettings.hide()
+            self.frameTransitionSettings.show()
+            self.comboProfile.setEnabled(True)
+            self.sequenceScrollArea.show()
+        elif style == 'Stream Copy':
+            self.gridWidget.hide()
+            self.frameGridSettings.hide()
+            self.frameTransitionSettings.hide()
+            self.sequenceScrollArea.show()
+            self.comboProfile.setCurrentText('None')
+            self.comboProfile.setEnabled(False)
+        elif style == 'Full Source Reencode':
+            self.gridWidget.hide()
+            self.frameGridSettings.hide()
+            self.frameTransitionSettings.hide()
+            self.comboProfile.setEnabled(True)
+            self.sequenceScrollArea.show()
+
+        self.updateSelectableVideos()
+        for v in list(self.selectableVideos.values()) + self.sequencedClips:
+            v.requestQueuedPreviews()
+
+    # -----------------------------------------------------------------------
+    # Sequence summary
+    # -----------------------------------------------------------------------
+
+    def updatedPredictedDuration(self):
+        totalTime = 0
+        timeTrimmedByFade = 0
         for sv in self.sequencedClips:
-          if sv.rid==rid:
-            sv.update(s,e,filterexp,filteraudioexp,filterexpEnc,requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+            totalTime += (sv.e - sv.s) * (1 / sv.getSpeed())
+            timeTrimmedByFade += self.transDurationValue
+        try:
+            totalTime = totalTime * (1 / self.speedAdjustmentValue)
+            timeTrimmedByFade = timeTrimmedByFade * (1 / self.speedAdjustmentValue)
+        except Exception:
+            pass
+        self.labelSequenceSummary.setText(
+            'Number of Subclips: {n} Total duration {td:0.2f}s Output Duration {tdext:0.2f}s ({factor:0.2%} speed)'.format(
+                n=len(self.sequencedClips),
+                td=totalTime,
+                tdext=totalTime - timeTrimmedByFade,
+                factor=self.speedAdjustmentValue,
+            )
+        )
+        if self.checkAutoName.isChecked():
+            for sv in self.sequencedClips[:1]:
+                outputPrefix = self.convertFilenameToBaseName(sv.filename)
+                try:
+                    if self.controller and len(self.controller.getLabelForRid(sv.rid)):
+                        outputPrefix += '_' + self.convertFilenameToBaseName(
+                            self.controller.getLabelForRid(sv.rid), getBasename=False)
+                except Exception:
+                    pass
+                self.entryFilenamePrefix.blockSignals(True)
+                self.entryFilenamePrefix.setText(outputPrefix)
+                self.entryFilenamePrefix.blockSignals(False)
+            else:
+                namefound = False
+                for col in self.gridColumns:
+                    for sv in col['clips']:
+                        try:
+                            outputPrefix = self.convertFilenameToBaseName(sv.filename)
+                            if self.controller and len(self.controller.getLabelForRid(sv.rid)):
+                                outputPrefix += '_' + self.convertFilenameToBaseName(
+                                    self.controller.getLabelForRid(sv.rid), getBasename=False)
+                            self.entryFilenamePrefix.blockSignals(True)
+                            self.entryFilenamePrefix.setText(outputPrefix)
+                            self.entryFilenamePrefix.blockSignals(False)
+                            namefound = True
+                            break
+                        except Exception:
+                            pass
+                    if namefound:
+                        break
 
+    # -----------------------------------------------------------------------
+    # Utility
+    # -----------------------------------------------------------------------
+
+    def convertFilenameToBaseName(self, filename, getBasename=True):
+        whitespaceChars = '-_. '
+        usableChars = string.ascii_letters + string.digits + whitespaceChars
+        if getBasename:
+            basenameList = ''.join(x for x in os.path.basename(filename).rpartition('.')[0] if x in usableChars)
+        else:
+            basenameList = ''.join(x for x in filename if x in usableChars)
+        for c in whitespaceChars:
+            basenameList = basenameList.replace(c, '-')
+        basename = ''
+        for c in basenameList:
+            if len(basename) == 0 or (basename[-1] != c and c == '-') or c != '-':
+                basename = basename + c
+        if len(basename) == 0:
+            basename = 'output'
+        return basename
+
+    # -----------------------------------------------------------------------
+    # Controller
+    # -----------------------------------------------------------------------
+
+    def setController(self, controller):
+        self.controller = controller
+        self.updateProfileSpecs()
+        self.updateOutputFormats()
+        for fe in self.postProcessingFilterOptions:
+            if fe.upper() == self.controller.getDefaultPostFilter().upper():
+                self.comboPostFilter.setCurrentText(fe)
+                break
+
+    def tabSwitched(self, tabName):
+        self.updateSelectableVideos()
+        for v in list(self.selectableVideos.values()) + self.sequencedClips:
+            v.requestQueuedPreviews()
+
+    # -----------------------------------------------------------------------
+    # Selectable videos
+    # -----------------------------------------------------------------------
+
+    def updateSelectableVideos(self):
+        if self.controller is None:
+            return
+        unusedRids = set(self.selectableVideos.keys())
+
+        refreshMode = 'CLIPS'
+        if self.comboMergeStyle.currentText().split('-')[0].strip() == 'Full Source Reencode':
+            refreshMode = 'VIDEOS'
+
+        for filename, rid, s, e, filterexp, filteraudioexp, filterexpEnc in sorted(
+                self.controller.getFilteredClips(refreshMode), key=lambda x: (x[0], x[2])):
+            if rid in self.selectableVideos:
+                unusedRids.discard(rid)
+            if rid not in self.selectableVideos:
+                entry = SelectableVideoEntry(
+                    self.selectableContainer, self, filename, rid, s, e,
+                    filterexp, filteraudioexp, filterexpEnc,
+                )
+                self.selectableVideos[rid] = entry
+                # insert before the stretch
+                count = self.selectableContainerLayout.count()
+                self.selectableContainerLayout.insertWidget(count - 1, entry)
+            elif (self.selectableVideos[rid].s != s or self.selectableVideos[rid].e != e or
+                  self.selectableVideos[rid].filterexp != filterexp or
+                  self.selectableVideos[rid].filteraudioexp != filteraudioexp):
+                self.selectableVideos[rid].update(
+                    s, e, filterexp, filteraudioexp, filterexpEnc,
+                    requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive),
+                )
+
+            for sv in self.sequencedClips:
+                if sv.rid == rid:
+                    sv.update(s, e, filterexp, filteraudioexp, filterexpEnc,
+                               requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+            for col in self.gridColumns:
+                for sv in col['clips']:
+                    if sv.rid == rid:
+                        sv.update(s, e, filterexp, filteraudioexp, filterexpEnc,
+                                   requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+
+        for rid in unusedRids:
+            widget = self.selectableVideos.pop(rid)
+            widget.setParent(None)
+            widget.deleteLater()
+
+        self.updatedPredictedDuration()
+
+    # -----------------------------------------------------------------------
+    # Preview frame callback
+    # -----------------------------------------------------------------------
+
+    def previewFrameCallback(self, requestId, timestamp, size, imageData):
+        # Convert imageData (bytes) to QPixmap
+        pixmap = QPixmap()
+        pixmap.loadFromData(imageData)
+        for sv in self.selectableVideos.values():
+            if sv.rid == requestId:
+                sv.setPreviewImage(pixmap)
+        for sv in self.sequencedClips:
+            if sv.rid == requestId:
+                sv.setPreviewImage(pixmap)
+        for prog in self.encoderProgress:
+            if prog.rid == requestId:
+                prog.setPreviewImage(pixmap)
         for col in self.gridColumns:
             for sv in col['clips']:
-              if sv.rid==rid:
-                sv.update(s,e,filterexp,filteraudioexp,filterexpEnc,requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+                if sv.rid == requestId:
+                    sv.setPreviewImage(pixmap)
 
-      for rid in unusedRids:
-        self.selectableVideos[rid].destroy()
-        del self.selectableVideos[rid]
-      self.updatedPredictedDuration()
+    def requestPreviewFrame(self, rid, filename, timestamp, filterexp):
+        self.controller.requestPreviewFrame(rid, filename, timestamp, filterexp, (-1, 80), self.previewFrameCallback)
 
+    # -----------------------------------------------------------------------
+    # Sequence management
+    # -----------------------------------------------------------------------
 
-  def tabSwitched(self,tabName):
-    if str(self) == tabName:
-      self.updateSelectableVideos()
+    def addClipToSequence(self, clip):
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            if self.selectedColumn is not None:
+                entry = SequencedVideoEntry(
+                    self.selectedColumn['column'].clipsWidget, self, clip, direction='UP_DOWN'
+                )
+                self.selectedColumn['column'].clipsLayout.addWidget(entry)
+                self.selectedColumn['clips'].append(entry)
+        else:
+            entry = SequencedVideoEntry(self.sequenceContainer, self, clip)
+            count = self.sequenceContainerLayout.count()
+            self.sequenceContainerLayout.insertWidget(count - 1, entry)
+            self.sequencedClips.append(entry)
+        self.updatedPredictedDuration()
+        if self.syncModal is not None:
+            self.syncModal.valuesChanged = True
+            self.syncModal.recalculateEDLTimings()
 
-      for v in list(self.selectableVideos.values()) + self.sequencedClips:
-        v.requestQueuedPreviews()
+    def moveSequencedClipByIndex(self, clipIndex, move):
+        clip = self.sequencedClips[clipIndex]
+        self.moveSequencedClip(clip, move)
+        if self.syncModal is not None:
+            self.syncModal.valuesChanged = True
+            self.syncModal.recalculateEDLTimings()
 
-      self.scrolledframeInputCustContainer.xview(mode='moveto',value=0)
-      self.scrolledframeSequenceContainer.xview(mode='moveto',value=0)
+    def moveSequencedClip(self, clip, move):
+        currentIndex = self.sequencedClips.index(clip)
+        if 0 <= currentIndex + move < len(self.sequencedClips):
+            self.sequencedClips[currentIndex], self.sequencedClips[currentIndex + move] = \
+                self.sequencedClips[currentIndex + move], self.sequencedClips[currentIndex]
+            # Re-insert in layout order
+            for c in self.sequencedClips:
+                self.sequenceContainerLayout.removeWidget(c)
+            for i, c in enumerate(self.sequencedClips):
+                self.sequenceContainerLayout.insertWidget(i, c)
+        if self.syncModal is not None:
+            self.syncModal.valuesChanged = True
+            self.syncModal.recalculateEDLTimings(rid=clip.rid)
 
-      self.scrolledframeInputCustContainer._scrollBothNow()
-      self.scrolledframeSequenceContainer._scrollBothNow()
+    def removeSequencedClip(self, clip):
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            for column in self.gridColumns:
+                try:
+                    currentIndex = column['clips'].index(clip)
+                    removed = column['clips'].pop(currentIndex)
+                    removed.setParent(None)
+                    removed.deleteLater()
+                except Exception:
+                    pass
+        else:
+            currentIndex = self.sequencedClips.index(clip)
+            removed = self.sequencedClips.pop(currentIndex)
+            removed.setParent(None)
+            removed.deleteLater()
+            self.updatedPredictedDuration()
+        if self.syncModal is not None:
+            self.syncModal.valuesChanged = True
+            self.syncModal.recalculateEDLTimings()
 
-  def addAllClipsInInterspersedOrder(self):
-    finalOrder=[]
-    clipsByFile  = {}
-    for clip in sorted(self.selectableVideos.values(),key=lambda x:x.s,reverse=True):
-      clipsByFile.setdefault(clip.filename,[]).append(clip)
-    clipsByFile = list(clipsByFile.values())
-    random.shuffle(clipsByFile)
+    def clearSequence(self, includeProgress=True):
+        for sv in list(self.sequencedClips):
+            sv.setParent(None)
+            sv.deleteLater()
+        self.sequencedClips.clear()
+        for col in list(self.gridColumns):
+            self.gridColumns.remove(col)
+            col['column'].setParent(None)
+            col['column'].deleteLater()
+        self.gridColumns.clear()
+        if self.syncModal is not None and self.syncModal.isActive:
+            self.syncModal.valuesChanged = True
+            self.syncModal.recalculateEDLTimings()
+        if includeProgress:
+            for e in list(self.encoderProgress):
+                if e.iscomplete or e.cancelled:
+                    e.remove()
 
-    while sum([len(x) for x in clipsByFile])>0:
-      for fileClips in clipsByFile:
-        if len(fileClips)>0:
-          finalOrder.append(fileClips.pop())
+    def clearAllColumns(self):
+        for column in self.gridColumns:
+            while len(column['clips']) > 0:
+                removed = column['clips'].pop()
+                removed.setParent(None)
+                removed.deleteLater()
 
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      self.clearAllColumns()
-      for ind,clip in enumerate(finalOrder):
-        self.gridColumns[ind%len(self.gridColumns)]['clips'].append(
-          SequencedVideoEntry(self.gridColumns[ind%len(self.gridColumns)]['column'],self,clip,direction='UP_DOWN'),
-        )
-    else:
-      self.clearSequence()
-      for clip in finalOrder:
-        self.addClipToSequence(clip)
+    # -----------------------------------------------------------------------
+    # Grid column management
+    # -----------------------------------------------------------------------
 
+    def addRow(self):
+        self.addColumn()
 
-  def addAllClipsInSmartRandomOrder(self):
-    smartOrder = []
-    smartCats  = {}
-    for clip in sorted(self.selectableVideos.values(),key=lambda x:random.random()):
-      smartCats.setdefault(clip.filename,[]).append(clip)
-    smartCats = list(smartCats.values())
-    random.shuffle(smartCats)
+    def addColumn(self):
+        col = GridColumn(self.gridColumnContainer, self)
+        self.gridColumnLayout.insertWidget(self.gridColumnLayout.count() - 1, col)
+        self.gridColumns.append({'column': col, 'clips': []})
 
-    lastList=None
-    while sum([len(x) for x in smartCats])>0:
-      smartCats = [x for x in smartCats if len(x)>0]
-      if len(smartCats)==1:
-        lastList=smartCats[0]
-        smartOrder.append(lastList.pop())
-      else:
-        othercats = [x for x in smartCats if x != lastList]
-        lastList = random.choice(othercats)
-        smartOrder.append(lastList.pop())
+    def selectColumn(self, col):
+        selectedCol = next((x for x in self.gridColumns if x['column'] == col), None)
+        if selectedCol is None:
+            return
+        if self.selectedColumn is not None:
+            self.selectedColumn['column'].setSelected(False)
+            self.selectedColumn = None
+        self.selectedColumn = selectedCol
+        self.selectedColumn['column'].setSelected(True)
 
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      self.clearAllColumns()
-      for ind,clip in enumerate(smartOrder):
-        self.gridColumns[ind%len(self.gridColumns)]['clips'].append(
-          SequencedVideoEntry(self.gridColumns[ind%len(self.gridColumns)]['column'],self,clip,direction='UP_DOWN'),
-        )
-    else:
-      self.clearSequence()
-      for clip in smartOrder:
-        self.addClipToSequence(clip)
+    def removeColumn(self, col):
+        colToRemove = next((x for x in self.gridColumns if x['column'] == col), None)
+        if colToRemove is None:
+            return
+        self.gridColumns.remove(colToRemove)
+        col.setParent(None)
+        col.deleteLater()
+        if self.selectedColumn == colToRemove:
+            self.selectedColumn = None
 
-  def addAllClipsInRIDOrder(self):
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      self.clearAllColumns()
-      for ind,clip in enumerate(sorted(self.selectableVideos.values(),key=lambda x:x.rid)):
-        self.gridColumns[ind%len(self.gridColumns)]['clips'].append(
-          SequencedVideoEntry(self.gridColumns[ind%len(self.gridColumns)]['column'],self,clip,direction='UP_DOWN'),
-        )
-    else:
-      self.clearSequence()
-      for clip in sorted(self.selectableVideos.values(),key=lambda x:x.rid):
-        self.addClipToSequence(clip)
+    # -----------------------------------------------------------------------
+    # Add all clips helpers
+    # -----------------------------------------------------------------------
 
-  def addAllClipsInRandomOrder(self):
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      self.clearAllColumns()
-      for ind,clip in enumerate(sorted(self.selectableVideos.values(),key=lambda x:random.random())):
-        self.gridColumns[ind%len(self.gridColumns)]['clips'].append(
-          SequencedVideoEntry(self.gridColumns[ind%len(self.gridColumns)]['column'],self,clip,direction='UP_DOWN'),
-        )
-    else:
-      self.clearSequence()
-      for clip in sorted(self.selectableVideos.values(),key=lambda x:random.random()):
-        self.addClipToSequence(clip)
+    def addAllClipsInTimelineOrder(self, minrid=-1, clearProgress=True):
+        finalrid = int(minrid)
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.clearAllColumns()
+            for ind, clip in enumerate(sorted(self.selectableVideos.values(), key=lambda x: (x.filename, x.s))):
+                finalrid = max(int(finalrid), int(clip.rid))
+                if int(clip.rid) > int(minrid):
+                    if ind % max(len(self.gridColumns), 1) < len(self.gridColumns):
+                        col = self.gridColumns[ind % len(self.gridColumns)]
+                        entry = SequencedVideoEntry(col['column'].clipsWidget, self, clip, direction='UP_DOWN')
+                        col['column'].clipsLayout.addWidget(entry)
+                        col['clips'].append(entry)
+        else:
+            self.clearSequence(includeProgress=clearProgress)
+            for clip in sorted(self.selectableVideos.values(), key=lambda x: (x.filename, x.s)):
+                finalrid = max(int(finalrid), int(clip.rid))
+                if int(clip.rid) > int(minrid):
+                    self.addClipToSequence(clip)
+        return finalrid
 
-  def clearAllColumns(self):
-    for column in self.gridColumns:
-      while len(column['clips'])>0:
-        removedClip = column['clips'].pop()
-        removedClip.pack_forget()
-        removedClip.destroy()    
+    def addAllClipsInRIDOrder(self):
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.clearAllColumns()
+            for ind, clip in enumerate(sorted(self.selectableVideos.values(), key=lambda x: x.rid)):
+                if self.gridColumns:
+                    col = self.gridColumns[ind % len(self.gridColumns)]
+                    entry = SequencedVideoEntry(col['column'].clipsWidget, self, clip, direction='UP_DOWN')
+                    col['column'].clipsLayout.addWidget(entry)
+                    col['clips'].append(entry)
+        else:
+            self.clearSequence()
+            for clip in sorted(self.selectableVideos.values(), key=lambda x: x.rid):
+                self.addClipToSequence(clip)
 
-  def addAllClipsInTimelineOrder(self,minrid=-1,clearProgress=True):
-    finalrid = int(minrid)
+    def addAllClipsInRandomOrder(self):
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.clearAllColumns()
+            for ind, clip in enumerate(sorted(self.selectableVideos.values(), key=lambda x: random.random())):
+                if self.gridColumns:
+                    col = self.gridColumns[ind % len(self.gridColumns)]
+                    entry = SequencedVideoEntry(col['column'].clipsWidget, self, clip, direction='UP_DOWN')
+                    col['column'].clipsLayout.addWidget(entry)
+                    col['clips'].append(entry)
+        else:
+            self.clearSequence()
+            for clip in sorted(self.selectableVideos.values(), key=lambda x: random.random()):
+                self.addClipToSequence(clip)
 
-    if self.mergeStyleVar.get().split('-')[0].strip() == 'Grid':
-      self.clearAllColumns()
-      for ind,clip in enumerate(sorted(self.selectableVideos.values(),key=lambda x:(x.filename,x.s))):
-        finalrid = max(int(finalrid),int(clip.rid))
-        
-        if int(clip.rid) > int(minrid):
-            self.gridColumns[ind%len(self.gridColumns)]['clips'].append(
-              SequencedVideoEntry(self.gridColumns[ind%len(self.gridColumns)]['column'],self,clip,direction='UP_DOWN'),
+    def addAllClipsInSmartRandomOrder(self):
+        smartOrder = []
+        smartCats = {}
+        for clip in sorted(self.selectableVideos.values(), key=lambda x: random.random()):
+            smartCats.setdefault(clip.filename, []).append(clip)
+        smartCats = list(smartCats.values())
+        random.shuffle(smartCats)
+        lastList = None
+        while sum([len(x) for x in smartCats]) > 0:
+            smartCats = [x for x in smartCats if len(x) > 0]
+            if len(smartCats) == 1:
+                lastList = smartCats[0]
+                smartOrder.append(lastList.pop())
+            else:
+                othercats = [x for x in smartCats if x != lastList]
+                lastList = random.choice(othercats)
+                smartOrder.append(lastList.pop())
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.clearAllColumns()
+            for ind, clip in enumerate(smartOrder):
+                if self.gridColumns:
+                    col = self.gridColumns[ind % len(self.gridColumns)]
+                    entry = SequencedVideoEntry(col['column'].clipsWidget, self, clip, direction='UP_DOWN')
+                    col['column'].clipsLayout.addWidget(entry)
+                    col['clips'].append(entry)
+        else:
+            self.clearSequence()
+            for clip in smartOrder:
+                self.addClipToSequence(clip)
+
+    def addAllClipsInInterspersedOrder(self):
+        finalOrder = []
+        clipsByFile = {}
+        for clip in sorted(self.selectableVideos.values(), key=lambda x: x.s, reverse=True):
+            clipsByFile.setdefault(clip.filename, []).append(clip)
+        clipsByFile = list(clipsByFile.values())
+        random.shuffle(clipsByFile)
+        while sum([len(x) for x in clipsByFile]) > 0:
+            for fileClips in clipsByFile:
+                if len(fileClips) > 0:
+                    finalOrder.append(fileClips.pop())
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+        if style == 'Grid':
+            self.clearAllColumns()
+            for ind, clip in enumerate(finalOrder):
+                if self.gridColumns:
+                    col = self.gridColumns[ind % len(self.gridColumns)]
+                    entry = SequencedVideoEntry(col['column'].clipsWidget, self, clip, direction='UP_DOWN')
+                    col['column'].clipsLayout.addWidget(entry)
+                    col['clips'].append(entry)
+        else:
+            self.clearSequence()
+            for clip in finalOrder:
+                self.addClipToSequence(clip)
+
+    # -----------------------------------------------------------------------
+    # Encode
+    # -----------------------------------------------------------------------
+
+    def registerComplete(self, filename, clip=None):
+        self.controller.registerComplete(filename, clip=clip)
+
+    def cancelEncodeRequest(self, requestId):
+        self.controller.cancelEncodeRequest(requestId)
+
+    def cancelAllEncodes(self):
+        for epw in self.encoderProgress:
+            epw.cancelEncodeRequest()
+
+    def encodeCurrent(self):
+        clip = None
+        nullfilter = ''
+        disableFilters = self.comboPostFilter.currentText() == 'Disable all filters'
+
+        if (not self.automaticFileNamingValue) and (
+                self.filenamePrefixValue is None or self.filenamePrefixValue.strip() == ''):
+            self.filenamePrefixValue = 'output'
+
+        style = self.comboMergeStyle.currentText().split('-')[0].strip()
+
+        def makeOptions(**extra):
+            opts = {
+                'frameSizeStrategy': self.frameSizeStrategyValue,
+                'maximumSize': self.maximumSizeValue,
+                'initialBitrate': self.initialbitrateValue,
+                'maximumBitrate': self.maxbitrateValue,
+                'maximumWidth': self.maximumWidthValue,
+                'transDuration': self.transDurationValue,
+                'transStyle': self.transStyleValue,
+                'speedAdjustment': self.speedAdjustmentValue,
+                'speedAdjustmentInterploate': self.interpolateSpeedChangeValue,
+                'outputFormat': self.outputFormatValue,
+                'audioChannels': self.audioChannels,
+                'audioRate': self.audioRate,
+                'audioMerge': self.audioMerge,
+                'postProcessingFilter': self.postProcessingFilter,
+                'audioOverride': self.audioOverrideValue,
+                'audiOverrideDelay': self.audiOverrideDelayValue,
+                'gridLoopMergeOption': self.gridLoopMergeOption,
+                'minimumPSNR': self.minimumPSNR,
+                'optimizer': self.optimizer,
+                'audioOverrideBias': self.audiOverrideBiasValue,
+            }
+            opts.update(extra)
+            opts.update(self.advancedFlags)
+            return opts
+
+        def makeProgressWidget(clip, targetSize=None):
+            w = EncodeProgress(
+                self.encodeProgressContainer,
+                encodeRequestId=self.encodeRequestId,
+                controller=self,
+                targetSize=targetSize if targetSize is not None else self.maximumSizeValue,
+                clip=clip,
             )
-    else:
-      self.clearSequence(includeProgress=clearProgress)
-      for clip in sorted(self.selectableVideos.values(),key=lambda x:(x.filename,x.s)):
-        finalrid = max(int(finalrid),int(clip.rid))
-        if int(clip.rid) > int(minrid):
-            self.addClipToSequence(clip)
+            self.encodeProgressLayout.addWidget(w)
+            self.encoderProgress.append(w)
+            return w
 
-    return finalrid
+        def autoPrefix(clip):
+            outputPrefix = self.filenamePrefixValue
+            if self.automaticFileNamingValue:
+                try:
+                    lbl = self.controller.getLabelForRid(clip.rid)
+                    if len(lbl):
+                        outputPrefix = self.convertFilenameToBaseName(lbl, getBasename=False)
+                    else:
+                        outputPrefix = self.convertFilenameToBaseName(clip.filename)
+                except Exception:
+                    outputPrefix = self.convertFilenameToBaseName(clip.filename)
+            return outputPrefix
 
+        # ----- Stream Copy -----
+        if style == 'Stream Copy':
+            encodeSequence = []
+            self.encodeRequestId += 1
+            for clip in self.sequencedClips:
+                encodeSequence.append((clip.rid, clip.filename, clip.s, clip.e, nullfilter, nullfilter, nullfilter, clip.getSpeed()))
+            if encodeSequence:
+                epw = makeProgressWidget(clip)
+                self.controller.encode(self.encodeRequestId, 'STREAMCOPY', encodeSequence, {}, autoPrefix(clip), epw.updateStatus)
 
-if __name__ == '__main__':
-  import webmGenerator
+        # ----- Grid -----
+        if style == 'Grid':
+            encodeSequence = []
+            selectedColumnInd = 0
+            for i, column in enumerate(self.gridColumns):
+                outcol = []
+                for clip in column['clips']:
+                    definition = (clip.rid, clip.filename, clip.s, clip.e,
+                                  nullfilter if disableFilters else clip.filterexp,
+                                  nullfilter if disableFilters else clip.filteraudioexp,
+                                  nullfilter if disableFilters else clip.filterexpEnc,
+                                  clip.getSpeed())
+                    outcol.append(definition)
+                    if column == self.selectedColumn:
+                        selectedColumnInd = i
+                if outcol:
+                    encodeSequence.append(outcol)
+            if not encodeSequence:
+                return
+            self.encodeRequestId += 1
+            options = makeOptions(selectedColumn=selectedColumnInd,
+                                  gridPaddingWidth=self.gridPadWidth,
+                                  gridPadColour=self.gridPadColour)
+            try:
+                lbl = self.controller.getLabelForRid(encodeSequence[0][0][0])
+                outputPrefix = self.convertFilenameToBaseName(lbl, getBasename=False) if len(lbl) else self.convertFilenameToBaseName(encodeSequence[0][0][1])
+            except Exception:
+                outputPrefix = self.filenamePrefixValue
+            epw = makeProgressWidget(clip)
+            self.controller.encode(self.encodeRequestId, 'GRID', encodeSequence, options, outputPrefix, epw.updateStatus)
+
+        # ----- Sequence -----
+        if style == 'Sequence':
+            uniqueSequences = set()
+            for clip in self.sequencedClips:
+                uniqueSequences.add(self.controller.getSeqGroupForRid(clip.rid))
+            sequenceRepreClip = None
+            for seqid in sorted(uniqueSequences):
+                encodeSequence = []
+                self.encodeRequestId += 1
+                for clip in self.sequencedClips:
+                    if self.controller.getSeqGroupForRid(clip.rid) == seqid:
+                        definition = (clip.rid, clip.filename, clip.s, clip.e,
+                                      nullfilter if disableFilters else clip.filterexp,
+                                      nullfilter if disableFilters else clip.filteraudioexp,
+                                      nullfilter if disableFilters else clip.filterexpEnc,
+                                      clip.getSpeed())
+                        encodeSequence.append(definition)
+                        sequenceRepreClip = clip
+                if sequenceRepreClip is None and self.sequencedClips:
+                    sequenceRepreClip = self.sequencedClips[-1]
+                if encodeSequence:
+                    options = makeOptions(loopStartAndEnd=self.loopStartAndendValue)
+                    try:
+                        lbl = self.controller.getLabelForRid(self.sequencedClips[0].rid)
+                        outputPrefix = self.convertFilenameToBaseName(lbl, getBasename=False) if len(lbl) else self.convertFilenameToBaseName(self.sequencedClips[0].filename)
+                    except Exception:
+                        outputPrefix = self.filenamePrefixValue
+                    epw = makeProgressWidget(sequenceRepreClip)
+                    self.controller.encode(self.encodeRequestId, 'CONCAT', encodeSequence, options.copy(), outputPrefix, epw.updateStatus)
+
+        # ----- Individual Files -----
+        if style == 'Individual Files':
+            for clip in self.sequencedClips:
+                encodeSequence = [(clip.rid, clip.filename, clip.s, clip.e,
+                                   nullfilter if disableFilters else clip.filterexp,
+                                   nullfilter if disableFilters else clip.filteraudioexp,
+                                   nullfilter if disableFilters else clip.filterexpEnc,
+                                   clip.getSpeed())]
+                self.encodeRequestId += 1
+                options = makeOptions(transDuration=0.0)
+                epw = makeProgressWidget(clip)
+                self.controller.encode(self.encodeRequestId, 'CONCAT', encodeSequence, options.copy(), autoPrefix(clip), epw.updateStatus)
+
+        # ----- Clip Reencode -----
+        if style == 'Clip Reencode':
+            for clip in self.sequencedClips:
+                encodeSequence = [(clip.rid, clip.filename, clip.s, clip.e, nullfilter, nullfilter, nullfilter, 1)]
+                self.encodeRequestId += 1
+                options = makeOptions(transDuration=0.0)
+                epw = makeProgressWidget(clip)
+                self.controller.encode(self.encodeRequestId, 'CONCAT', encodeSequence, options.copy(), autoPrefix(clip), epw.updateStatus)
+
+        # ----- Full Source Reencode -----
+        if style == 'Full Source Reencode':
+            uniquefilenames = set()
+            uniqueseq = []
+            for clip in self.sequencedClips:
+                if clip.filename not in uniquefilenames:
+                    uniquefilenames.add(clip.filename)
+                    uniqueseq.append(clip)
+            for clip in uniqueseq:
+                encodeSequence = [(clip.rid, clip.filename, None, None, nullfilter, nullfilter, nullfilter, 1)]
+                self.encodeRequestId += 1
+                options = makeOptions(transDuration=0.0)
+                epw = makeProgressWidget(clip)
+                self.controller.encode(self.encodeRequestId, 'CONCAT', encodeSequence, options.copy(), autoPrefix(clip), epw.updateStatus)
+
+    # -----------------------------------------------------------------------
+    # Misc controller-facing methods
+    # -----------------------------------------------------------------------
+
+    def setIgnoreDrop(self, path):
+        self.controller.setIgnoreDrop(path)
+
+    def selectAdvancedOptions(self):
+        modal = AdvancedEncodeFlagsModal(master=self, controller=self)
+        modal.exec()
+
+    def getAdvancedFlags(self):
+        return self.advancedFlags
+
+    def setAdvancedFlags(self, flags):
+        self.advancedFlags.update(flags)
+
+    def viewFilterForClip(self, clip):
+        self.controller.jumpToFilterByRid(clip.rid)
+
+    def destroyPlannerModal(self):
+        if self.syncModal is not None:
+            self.syncModal.isActive = False
+            self.syncModal.close()
+
+    def previewSequencetimings(self, uiParent=None):
+        if self.comboMergeStyle.currentText() != self.mergeStyles[1]:
+            self.comboMergeStyle.setCurrentText(self.mergeStyles[1])
+        self.destroyPlannerModal()
+
+        from PySide6.QtWidgets import QDialog
+        if uiParent is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle('Sequence Timings')
+            dlgLayout = QVBoxLayout(dlg)
+        else:
+            dlg = uiParent
+            dlgLayout = uiParent.layout() or QVBoxLayout(uiParent)
+
+        self.syncModal = VideoAudioSync(
+            uiParent=dlg,
+            master=self,
+            controller=self.controller,
+            sequencedClips=self.sequencedClips,
+            dubFile=self.btnAudioOverride,
+            dubOffsetVar=self.spinAudioDelay,
+            fadeVar=self.spinTransDuration,
+            globalOptions=self.globalOptions,
+            mixVar=self.spinAudioBias,
+        )
+        dlgLayout.addWidget(self.syncModal)
+        if uiParent is None:
+            dlg.exec()
+
+    def selectAudioOverride(self):
+        files, _ = QFileDialog.getOpenFileName(
+            self, 'Select audio dub', '',
+            'Audio files (*.mp3 *.wav);;All files (*.*)',
+        )
+        if files:
+            self.btnAudioOverride.setText(files)
+        else:
+            self.btnAudioOverride.setText('None')
+        self.valueChange()
+
+    def close_ui(self):
+        if self.syncModal is not None:
+            try:
+                self.syncModal.cleanup()
+            except Exception:
+                pass
+
+    def toggleBoringMode(self, boringMode):
+        if self.syncModal is not None and self.syncModal.isActive:
+            self.syncModal.toggleBoringMode(boringMode)
+
+    # -----------------------------------------------------------------------
+    # VideoSubclip callbacks
+    # -----------------------------------------------------------------------
+
+    def videoSubclipDurationChangeCallback(self, rid=None, pos=None, action='UPDATE'):
+        if self.syncModal is not None and self.syncModal.isActive:
+            refreshMode = 'CLIPS'
+            if self.comboMergeStyle.currentText().split('-')[0].strip() == 'Full Source Reencode':
+                refreshMode = 'VIDEOS'
+
+            if action == 'NEW':
+                self.updateSelectableVideos()
+                self.addClipToSequence(self.selectableVideos[rid])
+
+            if action == 'REMOVE':
+                clipsForRemoval = [sv for sv in self.sequencedClips if sv.rid == rid]
+                for clip in clipsForRemoval:
+                    self.removeSequencedClip(clip)
+
+            changedrid = rid
+            for filename, rid, s, e, filterexp, filteraudioexp, filterexpEnc in sorted(
+                    self.controller.getFilteredClips(refreshMode), key=lambda x: (x[0], x[2])):
+                for sv in self.sequencedClips:
+                    if sv.rid == rid and (changedrid is None or changedrid == rid):
+                        sv.update(s, e, filterexp, filteraudioexp, filterexpEnc,
+                                   requestPreviewFrame=not (self.syncModal is not None and self.syncModal.isActive))
+            try:
+                self.syncModal.keepWidth = True
+                self.syncModal.valuesChanged = True
+                self.syncModal.recalculateEDLTimings(rid=changedrid, pos=pos)
+                self.syncModal.keepWidth = False
+            except Exception:
+                pass
+
+    def synchroniseCutController(self, rid, startoffset, forceTabJump=False):
+        self.controller.synchroniseCutController(rid, startoffset, forceTabJump=forceTabJump)

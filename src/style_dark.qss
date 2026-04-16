@@ -1,0 +1,296 @@
+/* WebmGenerator Qt Stylesheet - Dark Mode */
+
+/* ========== Base dark theme ========== */
+
+QWidget {
+    color: white;
+    background-color: #0f0f0f;
+    font-family: 'Sans';
+    font-size: 10pt;
+}
+
+QMenuBar {
+    background-color: #0f0f0f;
+    color: white;
+}
+
+QMenuBar::item:selected {
+    background-color: #69bfdb;
+    color: #282828;
+}
+
+QMenu {
+    background-color: #0f0f0f;
+    color: white;
+}
+
+QMenu::item:selected {
+    background-color: #69bfdb;
+    color: #282828;
+}
+
+QMenu::item:disabled {
+    color: #4c4c4c;
+}
+
+/* ========== Tab widget ========== */
+
+QTabWidget::pane {
+    border: 1px solid #0f0f0f;
+    background-color: #0f0f0f;
+}
+
+QTabBar::tab {
+    background-color: #0f0f0f;
+    color: white;
+    padding: 6px 12px;
+    border: 1px solid #0f0f0f;
+}
+
+QTabBar::tab:selected {
+    background-color: #2f2f2f;
+    font-weight: bold;
+}
+
+QTabBar::tab:!selected {
+    background-color: #0f0f0f;
+}
+
+/* ========== Frames and groups ========== */
+
+QFrame, QGroupBox {
+    background-color: #0f0f0f;
+    border-color: #1f1f1f;
+}
+
+QGroupBox::title {
+    color: white;
+}
+
+/* ========== Labels ========== */
+
+QLabel {
+    color: white;
+    background-color: #0f0f0f;
+}
+
+/* ========== Buttons ========== */
+
+QPushButton {
+    color: white;
+    background-color: #0f0f0f;
+    border: 1px solid #282828;
+    padding: 4px 8px;
+}
+
+QPushButton:hover {
+    background-color: #69bfdb;
+    color: #282828;
+}
+
+QPushButton:disabled {
+    background-color: #060B0C;
+    color: #4c4c4c;
+}
+
+QToolButton {
+    color: white;
+    background-color: #1f1f1f;
+    border: 1px solid #1f1f1f;
+}
+
+QToolButton:hover {
+    background-color: #1f1f1f;
+}
+
+/* ========== Checkboxes and Radio buttons ========== */
+
+QCheckBox {
+    color: white;
+    background-color: #0f0f0f;
+}
+
+QRadioButton {
+    color: white;
+    background-color: #0f0f0f;
+}
+
+QRadioButton:hover {
+    background-color: #1f1f1f;
+}
+
+/* ========== Input widgets ========== */
+
+QLineEdit {
+    color: white;
+    background-color: #1f1f1f;
+    border: 1px solid darkgrey;
+}
+
+QSpinBox, QDoubleSpinBox {
+    color: white;
+    background-color: #1f1f1f;
+    border: 1px solid darkgrey;
+}
+
+QComboBox {
+    color: white;
+    background-color: #0f0f0f;
+    border: 1px solid #0f0f0f;
+}
+
+QComboBox QAbstractItemView {
+    color: white;
+    background-color: #1f1f1f;
+    selection-background-color: #69bfdb;
+    selection-color: #282828;
+}
+
+/* ========== Progress bars ========== */
+
+QProgressBar {
+    background-color: #0f0f0f;
+    border: none;
+    text-align: center;
+    color: white;
+    height: 20px;
+}
+
+QProgressBar[objectName="redProgress"]::chunk { background-color: red; }
+QProgressBar[objectName="blueProgress"]::chunk { background-color: blue; }
+QProgressBar[objectName="greenProgress"]::chunk { background-color: green; }
+
+/* ========== Scrollbars ========== */
+
+QScrollBar:vertical {
+    background-color: #0f0f0f;
+    width: 12px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #2f2f2f;
+    min-height: 20px;
+}
+
+QScrollBar:horizontal {
+    background-color: #0f0f0f;
+    height: 12px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #2f2f2f;
+    min-width: 20px;
+}
+
+/* ========== Scroll area ========== */
+
+QScrollArea {
+    background-color: #0f0f0f;
+    border: none;
+}
+
+/* ========== Player frame ========== */
+
+QWidget[objectName="playerFrame"] {
+    background-color: #282828;
+    border: none;
+}
+
+QLabel[objectName="playerLabel"] {
+    background-color: #282828;
+    color: white;
+}
+
+/* ========== Selected command frame ========== */
+
+QWidget[objectName="selectedCommandFrame"] {
+    background-color: #a8e4a0;
+}
+
+QWidget[objectName="selectedCommandFrame"] QLabel {
+    background-color: #a8e4a0;
+    color: black;
+}
+
+/* ========== Filter disabled ========== */
+
+QWidget[objectName="filterDisabled"] { background-color: #e4a8a0; }
+QWidget[objectName="filterDisabled"] QLabel { background-color: #e4a8a0; }
+QWidget[objectName="filterDisabled"] QPushButton { background-color: #e4a8a0; }
+
+/* ========== Small video sub buttons ========== */
+
+QPushButton[objectName="smallVideoSub"] {
+    padding: 0px;
+    background-color: #282828;
+    color: #69bfdb;
+    border: none;
+}
+
+QPushButton[objectName="smallVideoSub"]:hover {
+    background-color: #69bfdb;
+    color: #282828;
+}
+
+QPushButton[objectName="abortLoad"] {
+    padding: 0px;
+    background-color: #195467;
+    color: #69bfdb;
+    border: none;
+}
+
+QPushButton[objectName="abortLoad"]:hover {
+    background-color: #69bfdb;
+    color: #195467;
+}
+
+/* ========== Subtle entry ========== */
+
+QLineEdit[objectName="subtleEntry"] {
+    background-color: #282828;
+    color: white;
+    border: none;
+}
+
+/* ========== Bold / warning labels ========== */
+
+QLabel[objectName="boldLabel"] { font-weight: bold; }
+QLabel[objectName="warningLabel"] { font-weight: bold; color: red; }
+QLabel[objectName="currentVer"] { color: green; }
+QLabel[objectName="oldVer"] { color: red; }
+
+/* PSNR quality labels */
+QLabel[objectName="psnrExcellent"] { color: green; }
+QLabel[objectName="psnrGood"] { color: green; }
+QLabel[objectName="psnrFair"] { color: darkorange; }
+QLabel[objectName="psnrPoor"] { color: red; }
+QLabel[objectName="psnrTerrible"] { color: red; }
+
+/* ========== Drop message ========== */
+
+QLabel[objectName="dropMessage"] {
+    background-color: #282828;
+    color: #69bfdb;
+    font-size: 50pt;
+}
+
+/* ========== Boring mode ========== */
+
+QLabel[objectName="boringMode"] {
+    color: white;
+    background-color: black;
+    font-family: monospace;
+}
+
+/* ========== List widget ========== */
+
+QListWidget {
+    background-color: #1f1f1f;
+    color: white;
+    border: 1px solid #2f2f2f;
+}
+
+QListWidget::item:selected {
+    background-color: #69bfdb;
+    color: #282828;
+}

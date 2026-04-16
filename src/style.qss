@@ -1,0 +1,215 @@
+/* WebmGenerator Qt Stylesheet - Light Mode */
+
+/* ========== Base styles ========== */
+
+QWidget {
+    font-family: 'Sans';
+    font-size: 10pt;
+}
+
+/* ========== Player frame ========== */
+
+QWidget[objectName="playerFrame"] {
+    background-color: #282828;
+    border: none;
+}
+
+QLabel[objectName="playerLabel"] {
+    background-color: #282828;
+    color: white;
+}
+
+QLabel[objectName="previewImgLabel"] {
+    background-color: #282828;
+    color: white;
+}
+
+QWidget[objectName="previewImgFrame"] {
+    background-color: #282828;
+}
+
+/* ========== Selected command frame ========== */
+
+QWidget[objectName="selectedCommandFrame"] {
+    background-color: #a8e4a0;
+}
+
+QWidget[objectName="selectedCommandFrame"] QLabel {
+    background-color: #a8e4a0;
+}
+
+/* ========== Progress bars ========== */
+
+QProgressBar {
+    border: none;
+    text-align: center;
+    height: 20px;
+}
+
+QProgressBar[objectName="redProgress"]::chunk {
+    background-color: red;
+}
+
+QProgressBar[objectName="blueProgress"]::chunk {
+    background-color: blue;
+}
+
+QProgressBar[objectName="greenProgress"]::chunk {
+    background-color: green;
+}
+
+/* ========== Filter disabled state ========== */
+
+QWidget[objectName="filterDisabled"] {
+    background-color: #e4a8a0;
+}
+
+QWidget[objectName="filterDisabled"] QLabel {
+    background-color: #e4a8a0;
+}
+
+QWidget[objectName="filterDisabled"] QPushButton {
+    background-color: #e4a8a0;
+}
+
+/* ========== Button styles ========== */
+
+QPushButton {
+    padding: 4px 8px;
+}
+
+QPushButton[objectName="smallButton"] {
+    padding: 2px 4px;
+}
+
+QPushButton[objectName="smallSlimButton"] {
+    padding: 0px 2px;
+}
+
+QPushButton[objectName="smallVideoSub"] {
+    padding: 0px;
+    background-color: #282828;
+    color: #69bfdb;
+    border: none;
+}
+
+QPushButton[objectName="smallVideoSub"]:hover {
+    background-color: #69bfdb;
+    color: #282828;
+}
+
+QPushButton[objectName="abortLoad"] {
+    padding: 0px;
+    background-color: #195467;
+    color: #69bfdb;
+    border: none;
+}
+
+QPushButton[objectName="abortLoad"]:hover {
+    background-color: #69bfdb;
+    color: #195467;
+}
+
+QPushButton[objectName="smallBlue"] {
+    padding: 0px;
+    background-color: blue;
+    color: white;
+    border: none;
+}
+
+/* ========== Label styles ========== */
+
+QLabel[objectName="boldLabel"] {
+    font-weight: bold;
+}
+
+QLabel[objectName="warningLabel"] {
+    font-weight: bold;
+    color: red;
+}
+
+QLabel[objectName="currentVer"] {
+    color: green;
+}
+
+QLabel[objectName="oldVer"] {
+    color: red;
+}
+
+/* PSNR quality labels */
+QLabel[objectName="psnrExcellent"] { color: green; }
+QLabel[objectName="psnrGood"] { color: green; }
+QLabel[objectName="psnrFair"] { color: darkorange; }
+QLabel[objectName="psnrPoor"] { color: red; }
+QLabel[objectName="psnrTerrible"] { color: red; }
+
+/* ========== Entry / Spinbox ========== */
+
+QLineEdit[objectName="subtleEntry"] {
+    background-color: #282828;
+    color: white;
+    border: none;
+}
+
+QLineEdit[objectName="errorEntry"] {
+    border: 1px solid #ff0000;
+    color: #ff0000;
+}
+
+/* ========== Drop message overlay ========== */
+
+QLabel[objectName="dropMessage"] {
+    background-color: #282828;
+    color: #69bfdb;
+    font-size: 50pt;
+}
+
+/* ========== Boring mode ========== */
+
+QLabel[objectName="boringMode"] {
+    color: white;
+    background-color: black;
+    font-family: monospace;
+}
+
+/* ========== Vertical pack compact styles ========== */
+
+QLabel[objectName="verticalPack"] {
+    padding: 2px 0px;
+}
+
+QSpinBox[objectName="verticalPack"],
+QDoubleSpinBox[objectName="verticalPack"] {
+    padding: 0px;
+}
+
+/* ========== Disabled listing frame ========== */
+
+QWidget[objectName="disabledListing"] {
+    background-color: #000;
+    border: none;
+}
+
+/* ========== Scrollbar styling ========== */
+
+QScrollBar:vertical {
+    width: 12px;
+}
+
+QScrollBar:horizontal {
+    height: 12px;
+}
+
+/* ========== Tab widget ========== */
+
+QTabWidget::pane {
+    border: 1px solid #ccc;
+}
+
+QTabBar::tab {
+    padding: 6px 12px;
+}
+
+QTabBar::tab:selected {
+    font-weight: bold;
+}
